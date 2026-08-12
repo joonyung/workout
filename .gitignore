@@ -1,0 +1,17 @@
+.DS_Store
+.idea/
+dist/
+node_modules/
+/state/
+/releases/
+/logs/
+/current
+
+.env
+.env.*
+!.env.example
+
+*.log
+*.pem
+*.key
+coverage/

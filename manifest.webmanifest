@@ -1,0 +1,18 @@
+{
+  "name": "Workout OS · Personal Training Log",
+  "short_name": "Workout",
+  "description": "Codex가 계획하고 내가 기록하는 개인 운동 로그",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f5f5f7",
+  "theme_color": "#f5f5f7",
+  "icons": [
+    {
+      "src": "/src/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
