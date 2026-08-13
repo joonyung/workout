@@ -15,10 +15,11 @@ Cloudflare Access, DNS, Tunnel ingress는 이미 설정되어 있다. 일반 재
 수정하지 않는다.
 
 ```text
-Phone ChatGPT -> Codex Remote -> Mac mini checkout -> state/data
-                                                    -> app server
-Internet -> Cloudflare Access -> Cloudflare Tunnel ----^
-MacBook Pro ----------- SSH code deployment ------------^
+Phone ChatGPT -> Codex Remote -> ~/Projects/workout/state
+                                      |
+                                      v
+Internet -> Cloudflare Access -> app server release
+MacBook Pro ----------- SSH deploy --------^
 ```
 
 ## 일반 배포
@@ -47,25 +48,27 @@ curl -I https://workout.joonyung.work
 ## 맥미니 파일 구조
 
 ```text
-/Users/joonyung/Services/workout/
-  .git/                     # 원격 저장소 연결 후 동일 코드 checkout
+/Users/joonyung/Projects/workout/
+  .git/                     # GitHub checkout, Codex Remote 작업공간
   AGENTS.md                 # Codex Remote 작업 지침
   docs/                     # 코칭 및 운영 규칙
+  state/data/               # 프로필, 계획, 운동 기록; Git 제외
+  state/inbody/             # InBody 원본; Git 제외
+
+/Users/joonyung/Services/workout/
   current -> releases/<release-id>
   releases/<release-id>/    # 변경하지 않는 앱 릴리스
-  state/data/               # 프로필, 계획, 운동 기록
-  state/inbody/             # InBody 원본
   logs/
 ```
 
-코드와 상태 데이터는 같은 작업공간에 있지만 Git 추적은 분리되어 있다.
-`state/`, `releases/`, `logs/`, `current`는 `.gitignore` 대상이다. 배포는
-`state/`를 전송하거나 덮어쓰지 않으며, 맥미니에 운영 상태가 없으면 실패한다.
-`current` 내부 파일은 직접 수정하지 않는다.
+Codex 작업공간과 운영 데이터는 같은 `~/Projects/workout` 아래에 있지만
+`state/`는 Git에서 제외된다. 실행 릴리스와 로그는 `~/Services/workout`에
+분리한다. 배포는 `state/`를 전송하거나 덮어쓰지 않으며, 맥미니에 운영
+상태가 없으면 실패한다. `current` 내부 파일은 직접 수정하지 않는다.
 
 ## Codex Remote
 
-맥미니의 `/Users/joonyung/Services/workout`을 Remote 프로젝트로 선택한다.
+맥미니의 `/Users/joonyung/Projects/workout`을 Remote 프로젝트로 선택한다.
 Codex는 저장소의 `AGENTS.md`와 코칭 프로토콜을 읽고 같은 작업공간의
 `state/`를 사용한다.
 

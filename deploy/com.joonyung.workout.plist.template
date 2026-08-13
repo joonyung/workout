@@ -20,9 +20,9 @@
     <key>WORKOUT_STATIC_ROOT</key>
     <string>__APP_ROOT__/current/dist</string>
     <key>WORKOUT_DATA_DIR</key>
-    <string>__APP_ROOT__/state/data</string>
+    <string>__STATE_ROOT__/data</string>
     <key>WORKOUT_INBODY_DIR</key>
-    <string>__APP_ROOT__/state/inbody</string>
+    <string>__STATE_ROOT__/inbody</string>
     <key>REQUIRE_ORIGIN</key>
     <string>true</string>
     <key>REQUIRE_CF_ACCESS</key>
