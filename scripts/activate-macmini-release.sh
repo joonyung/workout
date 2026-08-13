@@ -24,7 +24,7 @@ case "$app_root" in
   *) echo "Refusing unexpected app root: $app_root" >&2; exit 1 ;;
 esac
 
-test -f "${release_path}/scripts/dev-server.mjs"
+test -f "${release_path}/dist/server/dev-server.js"
 test -f "${release_path}/dist/index.html"
 test -f "$launch_agent_source"
 

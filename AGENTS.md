@@ -24,11 +24,13 @@ The user is Korean, and product-facing copy may be Korean. Keep this file in Eng
 
 - `index.html`: App shell.
 - `src/styles.css`: App styling.
-- `src/app.js`: Client-side state, data parsing, charts, and interactions.
-- `scripts/dev-server.mjs`: Local static server.
-- `scripts/build.mjs`: Static build validation and copy step.
-- `scripts/coach-context.mjs`: Produces the concise context Codex reads before programming.
-- `scripts/validate-data.mjs`: Validates profile, gym, plan, and workout records.
+- `src/app.ts`: Client-side state, charts, persistence, and interactions.
+- `src/core.ts`: Typed deterministic workout and InBody calculations.
+- `src/types.ts`: Shared domain and API types.
+- `scripts/dev-server.ts`: Local static and data API server.
+- `scripts/build.ts`: Browser bundling and production server compilation.
+- `scripts/coach-context.ts`: Produces the concise context Codex reads before programming.
+- `scripts/validate-data.ts`: Validates profile, gym, plan, and workout records.
 - `state/`: Untracked runtime data. It is the default local data root and must never be committed.
 - `state/inbody/`: Raw InBody CSV exports supplied by the user.
 - `state/data/profile.json`: Goal, schedule, experience, preferences, and safety constraints.
@@ -43,6 +45,7 @@ The user is Korean, and product-facing copy may be Korean. Keep this file in Eng
 
 - `npm run dev`: Start the local app server.
 - `npm run build`: Validate and copy the static app to `dist/`.
+- `npm run typecheck`: Run the strict TypeScript check without emitting files.
 - `npm test`: Run deterministic data-model tests.
 - `npm run validate:data`: Validate agent- and app-authored JSON records.
 - `npm run coach:context`: Print the current coaching context.
@@ -110,7 +113,7 @@ but it must not justify aggressive loading.
 
 Before handing off a meaningful change:
 
-1. Run `npm run build`.
+1. Run `npm run typecheck`, `npm test`, `npm run validate:data`, and `npm run build`.
 2. Start `npm run dev` if the user needs to try the app.
 3. Check that the app loads without console-blocking syntax errors.
 4. Confirm InBody CSV parsing still works with the existing files.

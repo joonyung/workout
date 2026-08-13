@@ -1,20 +1,33 @@
-export function uid(prefix = "id") {
+import type {
+  BestLift,
+  CompletedSet,
+  InBodyRange,
+  InBodyMetricKey,
+  InBodyRow,
+  NormalizedInBodyRow,
+  NumericInput,
+  WorkoutPlan,
+  WorkoutSession,
+  WeeklyStats
+} from "./types.ts";
+
+export function uid(prefix = "id"): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export function todayIso(date = new Date()) {
+export function todayIso(date = new Date()): string {
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
   return local.toISOString().slice(0, 10);
 }
 
-export function numberOrNull(value) {
+export function numberOrNull(value: unknown): number | null {
   if (value === undefined || value === null || value === "" || value === "-") return null;
   const parsed = Number(String(value).replace(/,/g, ""));
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-export function parseCsvLine(line) {
-  const cells = [];
+export function parseCsvLine(line: string): string[] {
+  const cells: string[] = [];
   let cell = "";
   let quoted = false;
 
@@ -39,7 +52,7 @@ export function parseCsvLine(line) {
   return cells;
 }
 
-export function parseInBodyCsv(csvText) {
+export function parseInBodyCsv(csvText: string): InBodyRow[] {
   const lines = String(csvText || "")
     .replace(/^\uFEFF/, "")
     .trim()
@@ -70,8 +83,8 @@ export function parseInBodyCsv(csvText) {
   }).filter((row) => /^\d{4}-\d{2}-\d{2}$/.test(row.date));
 }
 
-export function mergeInBodyRows(...collections) {
-  const byDate = new Map();
+export function mergeInBodyRows(...collections: InBodyRow[][]): InBodyRow[] {
+  const byDate = new Map<string, InBodyRow>();
 
   for (const row of collections.flat()) {
     if (!row?.date) continue;
@@ -82,14 +95,18 @@ export function mergeInBodyRows(...collections) {
   return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 
-export function inBodyWindow(rows, range = "1y") {
+export function inBodyWindow(rows: InBodyRow[], range: InBodyRange = "1y"): {
+  rows: InBodyRow[];
+  startMs: number | null;
+  endMs: number | null;
+} {
   const sorted = [...(rows || [])]
     .filter((row) => /^\d{4}-\d{2}-\d{2}$/.test(row?.date || ""))
     .sort((a, b) => a.date.localeCompare(b.date));
   if (!sorted.length) return { rows: [], startMs: null, endMs: null };
 
-  const timestamp = (date) => Date.parse(date + "T12:00:00Z");
-  const endMs = timestamp(sorted.at(-1).date);
+  const timestamp = (date: string) => Date.parse(date + "T12:00:00Z");
+  const endMs = timestamp(sorted.at(-1)!.date);
   let startMs = timestamp(sorted[0].date);
 
   if (range === "1y" || range === "2y") {
@@ -108,18 +125,22 @@ export function inBodyWindow(rows, range = "1y") {
   };
 }
 
-export function normalizeSeries(rows, key) {
+export function normalizeSeries(rows: InBodyRow[], key: InBodyMetricKey): NormalizedInBodyRow[] {
   const validRows = (rows || []).filter((row) => numberOrNull(row?.[key]) !== null);
   const baseline = numberOrNull(validRows[0]?.[key]);
   if (baseline === null || baseline === 0) return [];
 
   return validRows.map((row) => ({
     ...row,
-    normalizedValue: (numberOrNull(row[key]) / baseline) * 100
+    normalizedValue: (numberOrNull(row[key])! / baseline) * 100
   }));
 }
 
-export function createSessionFromPlan(plan, previousSession = null, now = new Date()) {
+export function createSessionFromPlan(
+  plan: WorkoutPlan,
+  previousSession: Pick<WorkoutSession, "exercises"> | null = null,
+  now = new Date()
+): WorkoutSession {
   if (!plan?.id || !Array.isArray(plan.exercises) || !plan.exercises.length) {
     throw new Error("A valid plan is required to create a session.");
   }
@@ -172,25 +193,30 @@ export function createSessionFromPlan(plan, previousSession = null, now = new Da
   };
 }
 
-export function mergeSessions(localSessions = [], remoteSessions = []) {
-  const sessions = new Map();
+export function mergeSessions(
+  localSessions: WorkoutSession[] = [],
+  remoteSessions: WorkoutSession[] = []
+): WorkoutSession[] {
+  const sessions = new Map<string, WorkoutSession>();
 
   for (const session of [...remoteSessions, ...localSessions]) {
     if (!session?.id) continue;
     const current = sessions.get(session.id);
-    const currentTime = Date.parse(current?.updatedAt || current?.startedAt || 0);
-    const candidateTime = Date.parse(session.updatedAt || session.startedAt || 0);
+    const currentTime = Date.parse(current?.updatedAt || current?.startedAt || "1970-01-01");
+    const candidateTime = Date.parse(session.updatedAt || session.startedAt || "1970-01-01");
     if (!current || candidateTime >= currentTime) sessions.set(session.id, session);
   }
 
   return [...sessions.values()].sort((a, b) => {
-    const aTime = Date.parse(a.startedAt || a.date || 0);
-    const bTime = Date.parse(b.startedAt || b.date || 0);
+    const aTime = Date.parse(a.startedAt || a.date || "1970-01-01");
+    const bTime = Date.parse(b.startedAt || b.date || "1970-01-01");
     return bTime - aTime;
   });
 }
 
-export function completedSets(source) {
+export function completedSets(
+  source: WorkoutSession | WorkoutSession[] | null | undefined
+): CompletedSet[] {
   const sessions = Array.isArray(source) ? source : source ? [source] : [];
   return sessions.flatMap((session) => (
     (session.exercises || []).flatMap((exercise) => (
@@ -202,17 +228,23 @@ export function completedSets(source) {
           sessionId: session.id,
           exerciseId: exercise.id,
           exerciseName: exercise.name,
-          muscleGroup: exercise.muscleGroup
+          muscleGroup: exercise.muscleGroup || "기타"
         }))
     ))
   ));
 }
 
-export function workingSets(source) {
+export function workingSets(
+  source: WorkoutSession | WorkoutSession[] | null | undefined
+): CompletedSet[] {
   return completedSets(source).filter((set) => set.setType !== "warmup");
 }
 
-export function sessionProgress(session) {
+export function sessionProgress(session: WorkoutSession | null | undefined): {
+  total: number;
+  completed: number;
+  ratio: number;
+} {
   const total = (session?.exercises || []).reduce(
     (sum, exercise) => sum + (exercise.sets?.length || exercise.targetSets || 0),
     0
@@ -225,7 +257,10 @@ export function sessionProgress(session) {
   };
 }
 
-export function weeklyStats(sessions, referenceDate = new Date()) {
+export function weeklyStats(
+  sessions: WorkoutSession[],
+  referenceDate = new Date()
+): WeeklyStats {
   const start = new Date(referenceDate);
   const day = start.getDay() || 7;
   start.setDate(start.getDate() - day + 1);
@@ -249,7 +284,7 @@ export function weeklyStats(sessions, referenceDate = new Date()) {
     const reps = numberOrNull(set.reps);
     return sum + (weight !== null && reps !== null ? weight * reps : 0);
   }, 0);
-  const byMuscle = sets.reduce((result, set) => {
+  const byMuscle = sets.reduce<Record<string, number>>((result, set) => {
     result[set.muscleGroup] = (result[set.muscleGroup] || 0) + 1;
     return result;
   }, {});
@@ -264,15 +299,15 @@ export function weeklyStats(sessions, referenceDate = new Date()) {
   };
 }
 
-export function e1rm(weight, reps) {
+export function e1rm(weight: NumericInput | undefined, reps: NumericInput | undefined): number {
   const load = numberOrNull(weight);
   const repetitions = numberOrNull(reps);
   if (load === null || repetitions === null || load <= 0 || repetitions <= 0) return 0;
   return load * (1 + repetitions / 30);
 }
 
-export function bestLifts(sessions) {
-  const best = {};
+export function bestLifts(sessions: WorkoutSession[]): BestLift[] {
+  const best: Record<string, BestLift> = {};
 
   for (const set of workingSets(sessions).filter((item) => item.validForProgression !== false)) {
     const estimate = e1rm(set.weightKg, set.reps);
@@ -290,7 +325,10 @@ export function bestLifts(sessions) {
   return Object.values(best).sort((a, b) => b.e1rm - a.e1rm);
 }
 
-export function previousSessionForPlan(sessions, plan) {
+export function previousSessionForPlan(
+  sessions: WorkoutSession[],
+  plan: WorkoutPlan | null | undefined
+): Pick<WorkoutSession, "exercises"> | null {
   const finishedSessions = [...sessions]
     .filter((session) => session.finishedAt)
     .sort((a, b) => (
@@ -307,6 +345,9 @@ export function previousSessionForPlan(sessions, plan) {
   return exercises.length ? { exercises } : null;
 }
 
-export function planNeedsRefresh(plan, date = todayIso()) {
+export function planNeedsRefresh(
+  plan: Pick<WorkoutPlan, "date"> | null | undefined,
+  date = todayIso()
+): boolean {
   return !plan || plan.date !== date;
 }

@@ -5,23 +5,25 @@ import {
   mergeInBodyRows,
   parseInBodyCsv,
   weeklyStats
-} from "../src/core.js";
+} from "../src/core.ts";
 import {
   dataRoot,
   inbodyRoot,
   resolveStateReference,
   stateRoot
-} from "./runtime-paths.mjs";
+} from "./runtime-paths.ts";
+import type { Gym, Profile, WorkoutPlan, WorkoutSession } from "../src/types.ts";
 
-function readJson(path, fallback) {
+function readJson<T>(path: string, fallback: T): T {
   try {
-    return JSON.parse(readFileSync(path, "utf8"));
+    return JSON.parse(readFileSync(path, "utf8")) as T;
   } catch {
     return fallback;
   }
 }
 
-function readText(path, fallback = "") {
+function readText(path: string | null, fallback = ""): string {
+  if (!path) return fallback;
   try {
     return readFileSync(path, "utf8");
   } catch {
@@ -29,7 +31,7 @@ function readText(path, fallback = "") {
   }
 }
 
-function collectFiles(directory, extension) {
+function collectFiles(directory: string, extension: string): string[] {
   if (!existsSync(directory)) return [];
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = join(directory, entry.name);
@@ -38,15 +40,15 @@ function collectFiles(directory, extension) {
   });
 }
 
-const profile = readJson(join(dataRoot, "profile.json"), {});
-const gym = readJson(join(dataRoot, "gyms", "current.json"), {});
+const profile = readJson<Partial<Profile>>(join(dataRoot, "profile.json"), {});
+const gym = readJson<Partial<Gym>>(join(dataRoot, "gyms", "current.json"), {});
 const gymContextMarkdown = gym.contextFile
   ? readText(resolveStateReference(gym.contextFile))
   : "";
-const currentPlan = readJson(join(dataRoot, "plans", "current.json"), null);
+const currentPlan = readJson<WorkoutPlan | null>(join(dataRoot, "plans", "current.json"), null);
 const sessions = collectFiles(join(dataRoot, "workouts"), ".json")
-  .map((path) => readJson(path, null))
-  .filter(Boolean)
+  .map((path) => readJson<WorkoutSession | null>(path, null))
+  .filter((session): session is WorkoutSession => Boolean(session))
   .sort((a, b) => Date.parse(b.startedAt || b.date) - Date.parse(a.startedAt || a.date));
 const inBody = mergeInBodyRows(
   ...collectFiles(inbodyRoot, ".csv").map((path) => (

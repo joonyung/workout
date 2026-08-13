@@ -14,7 +14,7 @@ async function startServer() {
   await mkdir(join(stateRoot, "data", "plans"), { recursive: true });
   await mkdir(join(stateRoot, "inbody"), { recursive: true });
 
-  const child = spawn(process.execPath, ["scripts/dev-server.mjs"], {
+  const child = spawn(process.execPath, ["scripts/dev-server.ts"], {
     cwd: projectRoot,
     env: {
       ...process.env,
@@ -30,7 +30,7 @@ async function startServer() {
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk) => { stderr += chunk; });
 
-  const baseUrl = await new Promise((resolveUrl, reject) => {
+  const baseUrl = await new Promise<string>((resolveUrl, reject) => {
     const timeout = setTimeout(() => reject(new Error(`Server start timed out. ${stderr}`)), 5000);
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {

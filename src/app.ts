@@ -14,7 +14,31 @@ import {
   todayIso,
   uid,
   weeklyStats
-} from "./core.js";
+} from "./core.ts";
+import type {
+  BootstrapPayload,
+  EquipmentItem,
+  Gym,
+  InBodyRange,
+  InBodyMetricKey,
+  InBodyRow,
+  InBodySeries,
+  NumericInput,
+  PlanExercise,
+  Profile,
+  Readiness,
+  SessionExercise,
+  WorkoutPlan,
+  WorkoutSession,
+  WorkoutSet
+} from "./types.ts";
+
+type InBodyKey = Extract<
+  InBodyMetricKey,
+  "weightKg" | "skeletalMuscleKg" | "bodyFatPercent"
+>;
+type SetField = "weightKg" | "reps" | "rpe";
+type RangeWindow = ReturnType<typeof inBodyWindow>;
 
 const QA_MODE = new URLSearchParams(window.location.search).get("qa") === "1";
 const STORAGE_KEY = QA_MODE ? "workout-os-state-v2-qa" : "workout-os-state-v2";
@@ -22,7 +46,7 @@ const LEGACY_STORAGE_KEY = "workout-os-state-v1";
 const PROGRESS_CHART_HEIGHT = 270;
 const PROGRESS_CHART_PADDING = { top: 16, right: 8, bottom: 28, left: 38 };
 
-const fallbackProfile = {
+const fallbackProfile: Profile = {
   schemaVersion: 1,
   updatedAt: "1970-01-01T00:00:00.000Z",
   displayName: "나",
@@ -36,7 +60,7 @@ const fallbackProfile = {
   preferences: { prioritize: [], avoid: [] }
 };
 
-const fallbackGym = {
+const fallbackGym: Gym = {
   schemaVersion: 1,
   id: "current-gym",
   name: "현재 체육관",
@@ -45,7 +69,36 @@ const fallbackGym = {
   equipment: []
 };
 
-let state = {
+type SyncStatus = "loading" | "syncing" | "synced" | "local";
+type TabId = "today" | "history" | "progress" | "settings";
+
+interface AppState {
+  activeTab: TabId;
+  profile: Profile;
+  gym: Gym;
+  plan: WorkoutPlan | null;
+  sessions: WorkoutSession[];
+  inBody: InBodyRow[];
+  inBodyRange: InBodyRange;
+  activeInBodySeries: InBodySeries | null;
+  chartSelectedDate: string | null;
+  preReadiness: Readiness;
+  finishSheetOpen: boolean;
+  timer: {
+    running: boolean;
+    endsAt: number | null;
+    remaining: number;
+    exerciseName: string;
+  };
+  sync: {
+    status: SyncStatus;
+    serverAvailable: boolean;
+    lastSavedAt: string | null;
+  };
+  toast: string;
+}
+
+let state: AppState = {
   activeTab: "today",
   profile: fallbackProfile,
   gym: fallbackGym,
@@ -71,15 +124,15 @@ let state = {
   toast: ""
 };
 
-let syncTimeout = null;
-let timerInterval = null;
-let toastTimeout = null;
+let syncTimeout: ReturnType<typeof setTimeout> | null = null;
+let timerInterval: ReturnType<typeof setInterval> | null = null;
+let toastTimeout: ReturnType<typeof setTimeout> | null = null;
 
 function loadLocalState() {
   const raw = localStorage.getItem(STORAGE_KEY);
   if (raw) {
     try {
-      const saved = JSON.parse(raw);
+      const saved = JSON.parse(raw) as Partial<AppState>;
       state = {
         ...state,
         ...saved,
@@ -110,7 +163,10 @@ function loadLocalState() {
   if (!legacyRaw) return;
 
   try {
-    const legacy = JSON.parse(legacyRaw);
+    const legacy = JSON.parse(legacyRaw) as {
+      sessions?: WorkoutSession[];
+      inBody?: InBodyRow[];
+    };
     state.sessions = (legacy.sessions || [])
       .filter((session) => (
         session.finishedAt ||
@@ -145,15 +201,19 @@ function saveLocalState() {
   }));
 }
 
-function newerRecord(localValue, remoteValue, field = "updatedAt") {
+function newerRecord<T extends object>(
+  localValue: T | null,
+  remoteValue: T | null,
+  field: keyof T = "updatedAt" as keyof T
+): T | null {
   if (!localValue) return remoteValue;
   if (!remoteValue) return localValue;
-  const localTime = Date.parse(localValue[field] || 0);
-  const remoteTime = Date.parse(remoteValue[field] || 0);
+  const localTime = Date.parse(String(localValue[field] || "1970-01-01"));
+  const remoteTime = Date.parse(String(remoteValue[field] || "1970-01-01"));
   return remoteTime >= localTime ? remoteValue : localValue;
 }
 
-async function fetchJson(url, options = {}) {
+async function fetchJson<T>(url: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(url, {
     cache: "no-store",
     ...options,
@@ -163,10 +223,10 @@ async function fetchJson(url, options = {}) {
     }
   });
   if (!response.ok) throw new Error(`Request failed: ${response.status}`);
-  return response.json();
+  return response.json() as Promise<T>;
 }
 
-async function loadInBodyFiles(files) {
+async function loadInBodyFiles(files: string[]): Promise<InBodyRow[]> {
   const uniqueFiles = [...new Set(files || [])];
   const results = await Promise.allSettled(
     uniqueFiles.map(async (url) => {
@@ -186,9 +246,9 @@ async function loadBootstrap({ quiet = false } = {}) {
   if (!quiet) setSyncStatus("loading");
 
   try {
-    const data = await fetchJson("/api/bootstrap");
-    state.profile = newerRecord(state.profile, data.profile);
-    state.gym = newerRecord(state.gym, data.gym);
+    const data = await fetchJson<BootstrapPayload>("/api/bootstrap");
+    state.profile = newerRecord(state.profile, data.profile) ?? fallbackProfile;
+    state.gym = newerRecord(state.gym, data.gym) ?? fallbackGym;
     state.plan = newerRecord(state.plan, data.plan, "generatedAt");
     const deletedIds = new Set(data.deletedWorkoutIds || []);
     state.sessions = mergeSessions(state.sessions, data.sessions || [])
@@ -212,23 +272,24 @@ function syncLabel() {
   return "이 기기에 저장";
 }
 
-function setSyncStatus(status) {
+function setSyncStatus(status: SyncStatus): void {
   state.sync.status = status;
-  const badge = document.querySelector("#sync-status");
+  const badge = document.querySelector<HTMLInputElement>("#sync-status");
   if (badge) {
     badge.dataset.status = status;
-    badge.querySelector("span:last-child").textContent = syncLabel();
+    const label = badge.querySelector("span:last-child");
+    if (label) label.textContent = syncLabel();
   }
 }
 
-async function postJson(url, method, value) {
-  return fetchJson(url, {
+async function postJson<T>(url: string, method: string, value: unknown): Promise<T> {
+  return fetchJson<T>(url, {
     method,
     body: JSON.stringify(value)
   });
 }
 
-async function syncSession(session) {
+async function syncSession(session: WorkoutSession | null): Promise<void> {
   if (!session) return;
   if (QA_MODE) {
     setSyncStatus("local");
@@ -247,8 +308,8 @@ async function syncSession(session) {
   }
 }
 
-function scheduleSessionSync(session) {
-  clearTimeout(syncTimeout);
+function scheduleSessionSync(session: WorkoutSession): void {
+  if (syncTimeout) clearTimeout(syncTimeout);
   setSyncStatus("syncing");
   syncTimeout = setTimeout(() => syncSession(session), 350);
 }
@@ -273,17 +334,17 @@ async function syncAllSessions() {
   }
 }
 
-function activeSession() {
+function activeSession(): WorkoutSession | null {
   return state.sessions.find((session) => (
     session.date === todayIso() && !session.finishedAt
   )) || null;
 }
 
-function latestTodaySession() {
+function latestTodaySession(): WorkoutSession | null {
   return state.sessions.find((session) => session.date === todayIso()) || null;
 }
 
-function touchSession(session) {
+function touchSession(session: WorkoutSession): void {
   session.updatedAt = new Date().toISOString();
   state.sessions = mergeSessions(state.sessions, []);
   saveLocalState();
@@ -306,7 +367,7 @@ function startWorkout() {
   render();
 }
 
-function updateReadiness(value) {
+function updateReadiness(value: Readiness): void {
   state.preReadiness = value;
   const session = activeSession();
   if (session) {
@@ -318,24 +379,24 @@ function updateReadiness(value) {
   render();
 }
 
-function updateSet(exerciseId, setId, field, value) {
+function updateSet(exerciseId: string, setId: string, field: SetField, value: string): void {
   const session = activeSession();
   const exercise = session?.exercises?.find((item) => item.id === exerciseId);
   const set = exercise?.sets?.find((item) => item.id === setId);
-  if (!set) return;
+  if (!session || !set) return;
 
   set[field] = value;
   touchSession(session);
 }
 
-function toggleSet(exerciseId, setId) {
+function toggleSet(exerciseId: string, setId: string): void {
   const session = activeSession();
   const exercise = session?.exercises?.find((item) => item.id === exerciseId);
   const set = exercise?.sets?.find((item) => item.id === setId);
-  if (!set) return;
+  if (!session || !exercise || !set) return;
 
   if (!set.completed && numberOrNull(set.reps) === null) {
-    document.querySelector(
+    document.querySelector<HTMLInputElement>(
       `[data-exercise="${exerciseId}"][data-set="${setId}"][data-field="reps"]`
     )?.focus();
     showToast("반복수를 먼저 입력하세요.");
@@ -343,7 +404,7 @@ function toggleSet(exerciseId, setId) {
   }
 
   if (!set.completed && numberOrNull(set.rpe) === null) {
-    document.querySelector(
+    document.querySelector<HTMLInputElement>(
       `[data-exercise="${exerciseId}"][data-set="${setId}"][data-field="rpe"]`
     )?.focus();
     showToast("세트가 끝났을 때의 실제 RPE를 입력하세요.");
@@ -357,10 +418,10 @@ function toggleSet(exerciseId, setId) {
   render();
 }
 
-function addSet(exerciseId) {
+function addSet(exerciseId: string): void {
   const session = activeSession();
   const exercise = session?.exercises?.find((item) => item.id === exerciseId);
-  if (!exercise) return;
+  if (!session || !exercise) return;
 
   const previousSet = exercise.sets.at(-1);
   exercise.sets.push({
@@ -392,8 +453,8 @@ function openFinishSheet() {
 function finishWorkout() {
   const session = activeSession();
   if (!session) return;
-  const rpeInput = document.querySelector("#session-rpe");
-  const notesInput = document.querySelector("#session-notes");
+  const rpeInput = document.querySelector<HTMLInputElement>("#session-rpe");
+  const notesInput = document.querySelector<HTMLInputElement>("#session-notes");
   session.sessionRpe = numberOrNull(rpeInput?.value);
   session.notes = notesInput?.value?.trim() || session.notes || "";
   session.finishedAt = new Date().toISOString();
@@ -403,7 +464,7 @@ function finishWorkout() {
   render();
 }
 
-function reopenWorkout(sessionId) {
+function reopenWorkout(sessionId: string): void {
   const session = state.sessions.find((item) => item.id === sessionId);
   if (!session || session.date !== todayIso()) return;
   session.finishedAt = null;
@@ -411,12 +472,12 @@ function reopenWorkout(sessionId) {
   render();
 }
 
-function timerRemaining() {
+function timerRemaining(): number {
   if (!state.timer.running || !state.timer.endsAt) return state.timer.remaining || 0;
   return Math.max(0, Math.ceil((state.timer.endsAt - Date.now()) / 1000));
 }
 
-function startTimer(seconds, exerciseName = "") {
+function startTimer(seconds: number, exerciseName = ""): void {
   const duration = Number(seconds) || 90;
   state.timer = {
     running: true,
@@ -459,7 +520,7 @@ function dismissTimer() {
 }
 
 function startTimerInterval() {
-  clearInterval(timerInterval);
+  if (timerInterval) clearInterval(timerInterval);
   if (!state.timer.running) return;
   timerInterval = setInterval(() => {
     if (!state.timer.running) return;
@@ -470,20 +531,20 @@ function startTimerInterval() {
       state.timer.running = false;
       state.timer.endsAt = null;
       saveLocalState();
-      clearInterval(timerInterval);
+      if (timerInterval) clearInterval(timerInterval);
       showToast("휴식이 끝났습니다.");
     }
   }, 500);
 }
 
-function formatTimer(seconds) {
+function formatTimer(seconds: number): string {
   const minutes = Math.floor(seconds / 60).toString().padStart(2, "0");
   const remainder = (seconds % 60).toString().padStart(2, "0");
   return `${minutes}:${remainder}`;
 }
 
 function renderTimerBar() {
-  const container = document.querySelector("#rest-timer");
+  const container = document.querySelector<HTMLInputElement>("#rest-timer");
   if (!container) return;
   const remaining = timerRemaining();
   const visible = remaining > 0 || state.timer.running;
@@ -508,7 +569,7 @@ function renderTimerBar() {
   bindTimerEvents();
 }
 
-function formatDateKorean(dateString) {
+function formatDateKorean(dateString: string): string {
   if (!dateString) return "-";
   return new Intl.DateTimeFormat("ko-KR", {
     month: "long",
@@ -517,12 +578,12 @@ function formatDateKorean(dateString) {
   }).format(new Date(`${dateString}T12:00:00`));
 }
 
-function formatShortDate(dateString) {
+function formatShortDate(dateString?: string): string {
   if (!dateString) return "-";
   return dateString.replaceAll("-", ".");
 }
 
-function formatChartMonth(timestamp) {
+function formatChartMonth(timestamp: number): string {
   if (!Number.isFinite(timestamp)) return "-";
   const date = new Date(timestamp);
   return (
@@ -531,29 +592,29 @@ function formatChartMonth(timestamp) {
   );
 }
 
-function formatNumber(value, digits = 1, suffix = "") {
+function formatNumber(value: unknown, digits = 1, suffix = ""): string {
   if (value === null || value === undefined || Number.isNaN(value)) return "-";
   return `${Number(value).toFixed(digits)}${suffix}`;
 }
 
-function formatDelta(value, suffix = "") {
+function formatDelta(value: number | null, suffix = ""): string {
   if (value === null || value === undefined || Number.isNaN(value)) return "이전 측정 없음";
   const sign = value > 0 ? "+" : "";
   return `${sign}${value.toFixed(1)}${suffix}`;
 }
 
-function planSetCount(plan = state.plan) {
+function planSetCount(plan: WorkoutPlan | null = state.plan): number {
   return (plan?.exercises || []).reduce((sum, exercise) => sum + exercise.targetSets, 0);
 }
 
-function exerciseStartingLoad(exercise) {
+function exerciseStartingLoad(exercise: PlanExercise): string {
   if (numberOrNull(exercise.startingWeightKg) !== null) {
     return `${exercise.startingWeightKg}kg`;
   }
   return exercise.startingLoad || "";
 }
 
-function exerciseWarmupText(exercise) {
+function exerciseWarmupText(exercise: PlanExercise | SessionExercise): string {
   return (exercise.warmupSets || []).map((set) => {
     if (set.load) return `${set.load} × ${set.reps}`;
     const weight = numberOrNull(set.weightKg);
@@ -562,15 +623,15 @@ function exerciseWarmupText(exercise) {
   }).join(" · ");
 }
 
-function readinessLabel(value) {
+function readinessLabel(value: Readiness): string {
   return { good: "좋음", normal: "보통", tired: "피곤" }[value] || "보통";
 }
 
-function readinessGuidance(value) {
+function readinessGuidance(value: Readiness): string {
   return state.plan?.readinessRules?.[value] || "목표 RPE를 우선해 수행합니다.";
 }
 
-function renderReadiness(selected) {
+function renderReadiness(selected: Readiness): string {
   return `
     <div class="readiness" role="group" aria-label="오늘의 준비 상태">
       ${[
@@ -585,7 +646,7 @@ function renderReadiness(selected) {
   `;
 }
 
-function renderPlanHeader(session = null) {
+function renderPlanHeader(session: WorkoutSession | null = null): string {
   const plan = state.plan;
   const isRecoveryPlan = plan?.status === "recovery";
   const progress = session ? sessionProgress(session) : { completed: 0, total: planSetCount(plan), ratio: 0 };
@@ -669,7 +730,9 @@ function renderToday() {
 }
 
 function renderRecoveryDay() {
-  const actions = state.plan.recoveryActions || [];
+  const plan = state.plan;
+  if (!plan) return "";
+  const actions = plan.recoveryActions || [];
   return `
     ${renderPlanHeader()}
     <section class="content-section recovery-section">
@@ -680,7 +743,7 @@ function renderRecoveryDay() {
         </div>
         <span class="status-text">회복 우선</span>
       </div>
-      <p class="recovery-guidance">${escapeHtml(state.plan.recoveryGuidance || "")}</p>
+      <p class="recovery-guidance">${escapeHtml(plan.recoveryGuidance || "")}</p>
       <div class="recovery-list">
         ${actions.map((action, index) => `
           <div class="recovery-row">
@@ -697,7 +760,7 @@ function renderRecoveryDay() {
       <details open>
         <summary>다음 근력운동 조건</summary>
         <ul>
-          ${(state.plan.coachNotes || []).map((note) => `<li>${escapeHtml(note)}</li>`).join("")}
+          ${(plan.coachNotes || []).map((note) => `<li>${escapeHtml(note)}</li>`).join("")}
         </ul>
       </details>
     </section>
@@ -705,7 +768,9 @@ function renderRecoveryDay() {
 }
 
 function renderWorkoutPreview() {
-  const assumptions = state.plan.assumptions || [];
+  const plan = state.plan;
+  if (!plan) return "";
+  const assumptions = plan.assumptions || [];
   return `
     ${assumptions.length ? `
       <section class="notice assumption">
@@ -717,12 +782,12 @@ function renderWorkoutPreview() {
       <div class="section-heading">
         <div>
           <span class="section-kicker">프로그램</span>
-          <h2>${state.plan.exercises.length}개 운동</h2>
+          <h2>${plan.exercises.length}개 운동</h2>
         </div>
         <span class="status-text">RPE 기준</span>
       </div>
       <div class="preview-list">
-        ${state.plan.exercises.map((exercise, index) => `
+        ${plan.exercises.map((exercise, index) => `
           <div class="preview-row">
             <span class="preview-index">${String(index + 1).padStart(2, "0")}</span>
             <div>
@@ -742,7 +807,7 @@ function renderWorkoutPreview() {
   `;
 }
 
-function renderActiveWorkout(session) {
+function renderActiveWorkout(session: WorkoutSession): string {
   return `
     <section class="content-section workout-section">
       <div class="section-heading">
@@ -760,7 +825,7 @@ function renderActiveWorkout(session) {
       <details>
         <summary>오늘의 코칭 메모</summary>
         <ul>
-          ${(state.plan.coachNotes || []).map((note) => `<li>${escapeHtml(note)}</li>`).join("")}
+          ${(state.plan?.coachNotes || []).map((note) => `<li>${escapeHtml(note)}</li>`).join("")}
         </ul>
       </details>
     </section>
@@ -770,13 +835,13 @@ function renderActiveWorkout(session) {
   `;
 }
 
-function previousSetText(set) {
+function previousSetText(set: WorkoutSet): string {
   if (numberOrNull(set.previousReps) === null) return "이전 -";
   const weight = numberOrNull(set.previousWeightKg);
   return weight === null ? `이전 ×${set.previousReps}` : `이전 ${weight}×${set.previousReps}`;
 }
 
-function renderExercise(exercise) {
+function renderExercise(exercise: SessionExercise): string {
   const completedCount = exercise.sets.filter((set) => set.completed).length;
   const nextSet = exercise.sets.find((set) => !set.completed);
   const progress = exercise.sets.length ? completedCount / exercise.sets.length : 0;
@@ -856,11 +921,11 @@ function renderExercise(exercise) {
   `;
 }
 
-function renderFinishedWorkout(session) {
+function renderFinishedWorkout(session: WorkoutSession): string {
   const progress = sessionProgress(session);
   const durationMinutes = Math.max(
     1,
-    Math.round((Date.parse(session.finishedAt) - Date.parse(session.startedAt)) / 60_000)
+    Math.round((Date.parse(session.finishedAt || "") - Date.parse(session.startedAt || "")) / 60_000)
   );
 
   return `
@@ -904,60 +969,60 @@ function renderFinishedWorkout(session) {
   `;
 }
 
-function completedWorkingSetsForExercise(exercise) {
+function completedWorkingSetsForExercise(exercise: SessionExercise): WorkoutSet[] {
   return (exercise.sets || []).filter((set) => (
     set.completed && set.setType !== "warmup"
   ));
 }
 
-function completedWarmupSetsForExercise(exercise) {
+function completedWarmupSetsForExercise(exercise: SessionExercise): WorkoutSet[] {
   return (exercise.sets || []).filter((set) => (
     set.completed && set.setType === "warmup"
   ));
 }
 
-function sessionWorkingSets(session) {
+function sessionWorkingSets(session: WorkoutSession): WorkoutSet[] {
   return (session.exercises || []).flatMap(completedWorkingSetsForExercise);
 }
 
-function sessionWarmupSets(session) {
+function sessionWarmupSets(session: WorkoutSession): WorkoutSet[] {
   return (session.exercises || []).flatMap(completedWarmupSetsForExercise);
 }
 
-function setTonnage(set) {
+function setTonnage(set: WorkoutSet): number {
   const weight = numberOrNull(set.weightKg);
   const reps = numberOrNull(set.reps);
   return weight === null || reps === null ? 0 : weight * reps;
 }
 
-function setsTonnage(sets) {
+function setsTonnage(sets: WorkoutSet[]): number {
   return sets.reduce((total, set) => total + setTonnage(set), 0);
 }
 
-function formatTonnage(value) {
+function formatTonnage(value: number): string {
   if (!value) return "-";
   if (value >= 1000) return `${(value / 1000).toFixed(1)}t`;
   return `${Math.round(value)}kg`;
 }
 
-function averageRpe(sets) {
+function averageRpe(sets: WorkoutSet[]): number | null {
   const values = sets.map((set) => numberOrNull(set.rpe)).filter((value) => value !== null);
   if (!values.length) return null;
   return values.reduce((total, value) => total + value, 0) / values.length;
 }
 
-function formatRpe(value) {
+function formatRpe(value: number | null): string {
   if (value === null) return "-";
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
-function sessionDurationLabel(session) {
+function sessionDurationLabel(session: WorkoutSession): string {
   if (session.timingRecorded === false || !session.startedAt || !session.finishedAt) return "-";
   const minutes = Math.round((Date.parse(session.finishedAt) - Date.parse(session.startedAt)) / 60_000);
   return Number.isFinite(minutes) && minutes > 0 ? `${minutes}분` : "-";
 }
 
-function rpeZone(rpe) {
+function rpeZone(rpe: number | null): string {
   const value = numberOrNull(rpe);
   if (value === null) return "none";
   if (value <= 6) return "easy";
@@ -965,7 +1030,7 @@ function rpeZone(rpe) {
   return "hard";
 }
 
-function muscleColor(muscleGroup) {
+function muscleColor(muscleGroup: string): string {
   if (["하체", "대퇴사두"].includes(muscleGroup)) return "#ff9f0a";
   if (muscleGroup === "햄스트링") return "#ff375f";
   if (muscleGroup === "가슴") return "#0a84ff";
@@ -975,7 +1040,7 @@ function muscleColor(muscleGroup) {
   return "#8e8e93";
 }
 
-function renderMuscleDistribution(session) {
+function renderMuscleDistribution(session: WorkoutSession): string {
   const counts = new Map();
   for (const exercise of session.exercises || []) {
     const count = completedWorkingSetsForExercise(exercise).length;
@@ -996,7 +1061,7 @@ function renderMuscleDistribution(session) {
   `;
 }
 
-function renderHistorySet(set, index) {
+function renderHistorySet(set: WorkoutSet, index: number): string {
   const weight = numberOrNull(set.weightKg);
   const rpe = numberOrNull(set.rpe);
   return `
@@ -1011,7 +1076,7 @@ function renderHistorySet(set, index) {
   `;
 }
 
-function renderHistoryExercise(exercise) {
+function renderHistoryExercise(exercise: SessionExercise): string {
   const workingSets = completedWorkingSetsForExercise(exercise);
   const warmupSets = completedWarmupSetsForExercise(exercise);
   const allSets = [...warmupSets, ...workingSets];
@@ -1094,7 +1159,7 @@ function renderHistory() {
                 <div class="history-main">
                   <div class="history-title">
                     <strong>${escapeHtml(session.title || "운동")}</strong>
-                    <span>${escapeHtml(session.gymName || "장소 미기록")} · ${readinessLabel(session.readiness)}</span>
+                    <span>${escapeHtml(session.gymName || "장소 미기록")} · ${readinessLabel(session.readiness || "normal")}</span>
                   </div>
                   <div class="history-metrics">
                     <span><strong>${workingSets.length}</strong><small>작업 세트</small></span>
@@ -1132,14 +1197,24 @@ function renderHistory() {
   `;
 }
 
-function inBodyDelta(key) {
+function inBodyDelta(key: InBodyKey): number | null {
   const latest = state.inBody.at(-1);
   const previous = state.inBody.at(-2);
-  if (!latest || !previous || latest[key] === null || previous[key] === null) return null;
-  return latest[key] - previous[key];
+  const latestValue = latest?.[key];
+  const previousValue = previous?.[key];
+  if (typeof latestValue !== "number" || typeof previousValue !== "number") return null;
+  return latestValue - previousValue;
 }
 
-function inBodySeriesSettings(dark = false) {
+interface InBodySeriesSetting {
+  id: InBodySeries;
+  key: InBodyKey;
+  label: string;
+  suffix: string;
+  color: string;
+}
+
+function inBodySeriesSettings(dark = false): InBodySeriesSetting[] {
   return [
     {
       id: "weight",
@@ -1165,14 +1240,14 @@ function inBodySeriesSettings(dark = false) {
   ];
 }
 
-function formatNormalizedDelta(value) {
-  if (!Number.isFinite(value)) return "-";
+function formatNormalizedDelta(value: number | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "-";
   const delta = value - 100;
   const sign = delta > 0 ? "+" : "";
   return sign + delta.toFixed(1) + "%";
 }
 
-function selectedInBodyMeasurement(rangeWindow) {
+function selectedInBodyMeasurement(rangeWindow: RangeWindow): InBodyRow | null {
   return (
     rangeWindow.rows.find((row) => row.date === state.chartSelectedDate) ||
     rangeWindow.rows.at(-1) ||
@@ -1180,7 +1255,7 @@ function selectedInBodyMeasurement(rangeWindow) {
   );
 }
 
-function chartDetailHtml(row) {
+function chartDetailHtml(row: InBodyRow | null): string {
   if (!row) return `<div class="empty-inline">표시할 측정이 없습니다.</div>`;
   return `
     <div class="chart-detail-heading">
@@ -1224,7 +1299,7 @@ function renderProgress() {
   });
   const stats = weeklyStats(state.sessions);
   const best = bestLifts(state.sessions).slice(0, 4);
-  const metrics = [
+  const metrics: Array<[InBodyKey, string, number | null | undefined, string]> = [
     ["weightKg", "체중", latest?.weightKg, "kg"],
     ["skeletalMuscleKg", "골격근량", latest?.skeletalMuscleKg, "kg"],
     ["bodyFatPercent", "체지방률", latest?.bodyFatPercent, "%"]
@@ -1328,7 +1403,7 @@ function renderProgress() {
   `;
 }
 
-function equipmentStatusOptions(selected) {
+function equipmentStatusOptions(selected: EquipmentItem["status"]): string {
   return [
     ["unknown", "미확인"],
     ["available", "사용 가능"],
@@ -1469,7 +1544,7 @@ function renderFinishSheet() {
   `;
 }
 
-function tabButton(id, label, symbol) {
+function tabButton(id: TabId, label: string, symbol: string): string {
   return `
     <button class="tab-button ${state.activeTab === id ? "active" : ""}" data-tab="${id}"
       aria-current="${state.activeTab === id ? "page" : "false"}">
@@ -1480,7 +1555,8 @@ function tabButton(id, label, symbol) {
 }
 
 function render() {
-  const app = document.querySelector("#app");
+  const app = document.querySelector<HTMLInputElement>("#app");
+  if (!app) throw new Error("App root not found.");
   const view = {
     today: renderToday,
     history: renderHistory,
@@ -1517,15 +1593,17 @@ function render() {
 }
 
 function bindEvents() {
-  document.querySelectorAll("[data-tab]").forEach((button) => {
+  document.querySelectorAll<HTMLInputElement>("[data-tab]").forEach((button) => {
     button.addEventListener("click", () => {
-      state.activeTab = button.dataset.tab;
+      const tab = button.dataset.tab as TabId | undefined;
+      if (!tab) return;
+      state.activeTab = tab;
       saveLocalState();
       render();
     });
   });
 
-  document.querySelectorAll("[data-action='refresh']").forEach((button) => {
+  document.querySelectorAll<HTMLInputElement>("[data-action='refresh']").forEach((button) => {
     button.addEventListener("click", async () => {
       await loadBootstrap();
       render();
@@ -1533,29 +1611,38 @@ function bindEvents() {
     });
   });
 
-  document.querySelector("[data-action='start-workout']")?.addEventListener("click", startWorkout);
+  document.querySelector<HTMLInputElement>("[data-action='start-workout']")?.addEventListener("click", startWorkout);
 
-  document.querySelectorAll("[data-readiness]").forEach((button) => {
-    button.addEventListener("click", () => updateReadiness(button.dataset.readiness));
-  });
-
-  document.querySelectorAll("[data-field]").forEach((input) => {
-    input.addEventListener("input", () => {
-      updateSet(input.dataset.exercise, input.dataset.set, input.dataset.field, input.value);
+  document.querySelectorAll<HTMLInputElement>("[data-readiness]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const readiness = button.dataset.readiness as Readiness | undefined;
+      if (readiness) updateReadiness(readiness);
     });
   });
 
-  document.querySelectorAll("[data-action='toggle-set']").forEach((button) => {
-    button.addEventListener("click", () => toggleSet(button.dataset.exercise, button.dataset.set));
+  document.querySelectorAll<HTMLInputElement>("[data-field]").forEach((input) => {
+    input.addEventListener("input", () => {
+      const { exercise, set, field } = input.dataset;
+      if (exercise && set && field) updateSet(exercise, set, field as SetField, input.value);
+    });
   });
 
-  document.querySelectorAll("[data-action='add-set']").forEach((button) => {
-    button.addEventListener("click", () => addSet(button.dataset.exercise));
+  document.querySelectorAll<HTMLInputElement>("[data-action='toggle-set']").forEach((button) => {
+    button.addEventListener("click", () => {
+      const { exercise, set } = button.dataset;
+      if (exercise && set) toggleSet(exercise, set);
+    });
   });
 
-  document.querySelector("[data-action='open-finish']")?.addEventListener("click", openFinishSheet);
-  document.querySelector("[data-action='confirm-finish']")?.addEventListener("click", finishWorkout);
-  document.querySelectorAll("[data-action='cancel-finish']").forEach((element) => {
+  document.querySelectorAll<HTMLInputElement>("[data-action='add-set']").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (button.dataset.exercise) addSet(button.dataset.exercise);
+    });
+  });
+
+  document.querySelector<HTMLInputElement>("[data-action='open-finish']")?.addEventListener("click", openFinishSheet);
+  document.querySelector<HTMLInputElement>("[data-action='confirm-finish']")?.addEventListener("click", finishWorkout);
+  document.querySelectorAll<HTMLInputElement>("[data-action='cancel-finish']").forEach((element) => {
     element.addEventListener("click", (event) => {
       if (event.target !== element && element.classList.contains("sheet-backdrop")) return;
       state.finishSheetOpen = false;
@@ -1563,58 +1650,64 @@ function bindEvents() {
     });
   });
 
-  document.querySelector("[data-action='reopen']")?.addEventListener("click", (event) => {
-    reopenWorkout(event.currentTarget.dataset.session);
+  document.querySelector<HTMLInputElement>("[data-action='reopen']")?.addEventListener("click", (event) => {
+    const sessionId = (event.currentTarget as HTMLElement).dataset.session;
+    if (sessionId) reopenWorkout(sessionId);
   });
 
-  document.querySelectorAll("[data-inbody-range]").forEach((button) => {
+  document.querySelectorAll<HTMLInputElement>("[data-inbody-range]").forEach((button) => {
     button.addEventListener("click", () => {
-      state.inBodyRange = button.dataset.inbodyRange;
+      const range = button.dataset.inbodyRange as InBodyRange | undefined;
+      if (!range) return;
+      state.inBodyRange = range;
       state.chartSelectedDate = null;
       saveLocalState();
       render();
     });
   });
 
-  document.querySelectorAll("[data-inbody-series]").forEach((button) => {
+  document.querySelectorAll<HTMLInputElement>("[data-inbody-series]").forEach((button) => {
     button.addEventListener("click", () => {
-      const seriesId = button.dataset.inbodySeries;
+      const seriesId = button.dataset.inbodySeries as InBodySeries | undefined;
+      if (!seriesId) return;
       state.activeInBodySeries = state.activeInBodySeries === seriesId ? null : seriesId;
       saveLocalState();
       render();
     });
   });
 
-  const progressChart = document.querySelector("#progress-chart");
-  progressChart?.addEventListener("click", selectChartDate);
-  progressChart?.addEventListener("keydown", moveChartSelection);
+  const progressChart = document.querySelector<HTMLCanvasElement>("#progress-chart");
+  progressChart?.addEventListener("click", (event) => selectChartDate(event));
+  progressChart?.addEventListener("keydown", (event) => moveChartSelection(event));
 
-  document.querySelector("#profile-form")?.addEventListener("submit", saveProfile);
-  document.querySelector("#gym-form")?.addEventListener("submit", saveGym);
-  document.querySelector("[data-action='add-equipment']")?.addEventListener("click", addEquipment);
-  document.querySelectorAll("[data-action='remove-equipment']").forEach((button) => {
-    button.addEventListener("click", () => removeEquipment(button.dataset.id));
+  document.querySelector<HTMLFormElement>("#profile-form")?.addEventListener("submit", saveProfile);
+  document.querySelector<HTMLFormElement>("#gym-form")?.addEventListener("submit", saveGym);
+  document.querySelector<HTMLInputElement>("[data-action='add-equipment']")?.addEventListener("click", addEquipment);
+  document.querySelectorAll<HTMLInputElement>("[data-action='remove-equipment']").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (button.dataset.id) removeEquipment(button.dataset.id);
+    });
   });
-  document.querySelector("[data-action='new-gym']")?.addEventListener("click", newGym);
+  document.querySelector<HTMLInputElement>("[data-action='new-gym']")?.addEventListener("click", newGym);
 
-  document.querySelector("[data-action='inbody-file']")?.addEventListener("change", (event) => {
-    importInBodyFile(event.target.files?.[0]);
+  document.querySelector<HTMLInputElement>("[data-action='inbody-file']")?.addEventListener("change", (event) => {
+    importInBodyFile((event.target as HTMLInputElement).files?.[0]);
   });
-  document.querySelector("[data-action='export']")?.addEventListener("click", exportData);
+  document.querySelector<HTMLInputElement>("[data-action='export']")?.addEventListener("click", exportData);
 
   bindTimerEvents();
 }
 
 function bindTimerEvents() {
-  document.querySelector("[data-action='timer-pause']")?.addEventListener("click", pauseTimer);
-  document.querySelector("[data-action='timer-resume']")?.addEventListener("click", resumeTimer);
-  document.querySelector("[data-action='timer-dismiss']")?.addEventListener("click", dismissTimer);
+  document.querySelector<HTMLInputElement>("[data-action='timer-pause']")?.addEventListener("click", pauseTimer);
+  document.querySelector<HTMLInputElement>("[data-action='timer-resume']")?.addEventListener("click", resumeTimer);
+  document.querySelector<HTMLInputElement>("[data-action='timer-dismiss']")?.addEventListener("click", dismissTimer);
 }
 
-async function saveProfile(event) {
+async function saveProfile(event: SubmitEvent): Promise<void> {
   event.preventDefault();
-  const form = new FormData(event.currentTarget);
-  const goalLabels = {
+  const form = new FormData(event.currentTarget as HTMLFormElement);
+  const goalLabels: Record<string, string> = {
     recomposition: "근육 증가 중심 리컴포지션",
     hypertrophy: "근비대",
     strength: "근력",
@@ -1624,7 +1717,7 @@ async function saveProfile(event) {
   state.profile = {
     ...state.profile,
     goal,
-    goalLabel: goalLabels[goal],
+    goalLabel: goalLabels[goal] || goal,
     trainingDaysPerWeek: Number(form.get("trainingDaysPerWeek")),
     sessionMinutes: Number(form.get("sessionMinutes")),
     painOrInjuryNotes: String(form.get("painOrInjuryNotes") || "").trim(),
@@ -1635,7 +1728,7 @@ async function saveProfile(event) {
   setSyncStatus("syncing");
 
   try {
-    const result = await postJson("/api/profile", "PUT", state.profile);
+    const result = await postJson<{ profile: Profile }>("/api/profile", "PUT", state.profile);
     state.profile = result.profile;
     state.sync.serverAvailable = true;
     setSyncStatus("synced");
@@ -1648,16 +1741,20 @@ async function saveProfile(event) {
   saveLocalState();
 }
 
-function gymFromForm(formElement) {
+function gymFromForm(formElement: HTMLFormElement): Gym {
   const form = new FormData(formElement);
-  const equipment = [...document.querySelectorAll("[data-equipment-row]")].map((row) => {
+  const equipment: EquipmentItem[] = [...document.querySelectorAll<HTMLElement>("[data-equipment-row]")].flatMap((row) => {
     const existing = state.gym.equipment.find((item) => item.id === row.dataset.id) || {};
-    return {
+    const id = row.dataset.id;
+    const status = row.querySelector<HTMLSelectElement>("[data-equipment-status]")?.value as EquipmentItem["status"] | undefined;
+    const notes = row.querySelector<HTMLInputElement>("[data-equipment-note]")?.value.trim() || "";
+    if (!id || !status) return [];
+    return [{
       ...existing,
-      id: row.dataset.id,
-      status: row.querySelector("[data-equipment-status]").value,
-      notes: row.querySelector("[data-equipment-note]").value.trim()
-    };
+      id,
+      status,
+      notes
+    }];
   });
   return {
     ...state.gym,
@@ -1668,14 +1765,14 @@ function gymFromForm(formElement) {
   };
 }
 
-async function saveGym(event) {
+async function saveGym(event: SubmitEvent): Promise<void> {
   event.preventDefault();
-  state.gym = gymFromForm(event.currentTarget);
+  state.gym = gymFromForm(event.currentTarget as HTMLFormElement);
   saveLocalState();
   setSyncStatus("syncing");
 
   try {
-    const result = await postJson("/api/gym", "PUT", state.gym);
+    const result = await postJson<{ gym: Gym }>("/api/gym", "PUT", state.gym);
     state.gym = result.gym;
     state.sync.serverAvailable = true;
     setSyncStatus("synced");
@@ -1689,7 +1786,7 @@ async function saveGym(event) {
 }
 
 function addEquipment() {
-  const input = document.querySelector("#equipment-name");
+  const input = document.querySelector<HTMLInputElement>("#equipment-name");
   const name = input?.value.trim();
   if (!name) {
     input?.focus();
@@ -1706,7 +1803,7 @@ function addEquipment() {
   render();
 }
 
-function removeEquipment(id) {
+function removeEquipment(id: string): void {
   state.gym.equipment = state.gym.equipment.filter((item) => item.id !== id);
   state.gym.updatedAt = new Date().toISOString();
   saveLocalState();
@@ -1728,10 +1825,10 @@ function newGym() {
   };
   saveLocalState();
   render();
-  document.querySelector("[name='gymName']")?.select();
+  document.querySelector<HTMLInputElement>("[name='gymName']")?.select();
 }
 
-async function importInBodyFile(file) {
+async function importInBodyFile(file: File | undefined): Promise<void> {
   if (!file) return;
   const content = await file.text();
   const rows = parseInBodyCsv(content);
@@ -1778,20 +1875,21 @@ function exportData() {
   URL.revokeObjectURL(url);
 }
 
-function setChartSelection(date) {
+function setChartSelection(date: string | null): void {
   const rangeWindow = inBodyWindow(state.inBody, state.inBodyRange);
   const row = rangeWindow.rows.find((item) => item.date === date);
   if (!row) return;
   state.chartSelectedDate = row.date;
-  const detail = document.querySelector("#chart-detail");
+  const detail = document.querySelector<HTMLInputElement>("#chart-detail");
   if (detail) detail.innerHTML = chartDetailHtml(row);
   drawProgressChart();
 }
 
-function selectChartDate(event) {
+function selectChartDate(event: MouseEvent): void {
   const rangeWindow = inBodyWindow(state.inBody, state.inBodyRange);
-  if (!rangeWindow.rows.length) return;
-  const rect = event.currentTarget.getBoundingClientRect();
+  const { startMs, endMs } = rangeWindow;
+  if (!rangeWindow.rows.length || startMs === null || endMs === null) return;
+  const rect = (event.currentTarget as HTMLCanvasElement).getBoundingClientRect();
   const plotWidth = rect.width -
     PROGRESS_CHART_PADDING.left -
     PROGRESS_CHART_PADDING.right;
@@ -1800,9 +1898,8 @@ function selectChartDate(event) {
     Math.max(0, event.clientX - rect.left - PROGRESS_CHART_PADDING.left)
   );
   const ratio = plotWidth ? x / plotWidth : 1;
-  const targetMs = rangeWindow.startMs +
-    (rangeWindow.endMs - rangeWindow.startMs) * ratio;
-  const nearest = rangeWindow.rows.reduce((best, row) => {
+  const targetMs = startMs + (endMs - startMs) * ratio;
+  const nearest = rangeWindow.rows.reduce<{ row: InBodyRow; distance: number } | null>((best, row) => {
     const distance = Math.abs(
       Date.parse(row.date + "T12:00:00Z") - targetMs
     );
@@ -1811,7 +1908,7 @@ function selectChartDate(event) {
   if (nearest) setChartSelection(nearest.row.date);
 }
 
-function moveChartSelection(event) {
+function moveChartSelection(event: KeyboardEvent): void {
   if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
   event.preventDefault();
   const rangeWindow = inBodyWindow(state.inBody, state.inBodyRange);
@@ -1830,11 +1927,12 @@ function moveChartSelection(event) {
 }
 
 function drawProgressChart() {
-  const canvas = document.querySelector("#progress-chart");
+  const canvas = document.querySelector<HTMLCanvasElement>("#progress-chart");
   if (!canvas || !state.inBody.length) return;
 
   const rangeWindow = inBodyWindow(state.inBody, state.inBodyRange);
-  if (!rangeWindow.rows.length) return;
+  const { startMs, endMs } = rangeWindow;
+  if (!rangeWindow.rows.length || startMs === null || endMs === null) return;
 
   const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
   const configuredSeries = inBodySeriesSettings(dark).filter((item) => (
@@ -1853,6 +1951,7 @@ function drawProgressChart() {
   canvas.width = width * dpr;
   canvas.height = height * dpr;
   const context = canvas.getContext("2d");
+  if (!context) return;
   context.scale(dpr, dpr);
 
   const colors = {
@@ -1865,12 +1964,12 @@ function drawProgressChart() {
   const padding = PROGRESS_CHART_PADDING;
   const plotWidth = width - padding.left - padding.right;
   const plotHeight = height - padding.top - padding.bottom;
-  const rangeDuration = Math.max(1, rangeWindow.endMs - rangeWindow.startMs);
-  const xForDate = (date) => {
+  const rangeDuration = Math.max(1, endMs - startMs);
+  const xForDate = (date: string): number => {
     const timestamp = Date.parse(date + "T12:00:00Z");
     const ratio = Math.min(
       1,
-      Math.max(0, (timestamp - rangeWindow.startMs) / rangeDuration)
+      Math.max(0, (timestamp - startMs) / rangeDuration)
     );
     return padding.left + plotWidth * ratio;
   };
@@ -1884,7 +1983,7 @@ function drawProgressChart() {
   const domainPadding = Math.max(1, spread * 0.2);
   const min = Math.floor((rawMin - domainPadding) * 2) / 2;
   const max = Math.ceil((rawMax + domainPadding) * 2) / 2;
-  const yForValue = (value) => (
+  const yForValue = (value: number): number => (
     padding.top + plotHeight - ((value - min) / (max - min)) * plotHeight
   );
 
@@ -1973,11 +2072,11 @@ function drawProgressChart() {
 
   context.fillStyle = colors.text;
   context.font = "11px -apple-system, system-ui, sans-serif";
-  const startLabel = formatChartMonth(rangeWindow.startMs);
+  const startLabel = formatChartMonth(startMs);
   const middleLabel = formatChartMonth(
-    rangeWindow.startMs + rangeDuration / 2
+    startMs + rangeDuration / 2
   );
-  const endLabel = formatChartMonth(rangeWindow.endMs);
+  const endLabel = formatChartMonth(endMs);
   context.fillText(startLabel, padding.left, height - 8);
   context.fillText(
     middleLabel,
@@ -1991,21 +2090,21 @@ function drawProgressChart() {
   );
 }
 
-function showToast(message) {
+function showToast(message: string): void {
   state.toast = message;
-  const toast = document.querySelector("#toast");
+  const toast = document.querySelector<HTMLInputElement>("#toast");
   if (toast) {
     toast.textContent = message;
     toast.classList.add("visible");
   }
-  clearTimeout(toastTimeout);
+  if (toastTimeout) clearTimeout(toastTimeout);
   toastTimeout = setTimeout(() => {
     state.toast = "";
-    document.querySelector("#toast")?.classList.remove("visible");
+    document.querySelector<HTMLInputElement>("#toast")?.classList.remove("visible");
   }, 2600);
 }
 
-function escapeHtml(value) {
+function escapeHtml(value: unknown): string {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")

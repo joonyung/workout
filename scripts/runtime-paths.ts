@@ -13,7 +13,7 @@ export const inbodyRoot = resolve(
   process.env.WORKOUT_INBODY_DIR || join(stateRoot, "inbody")
 );
 
-export function resolveStateReference(path) {
+export function resolveStateReference(path: string | undefined): string | null {
   if (!path) return null;
   if (isAbsolute(path)) return path;
 

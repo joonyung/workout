@@ -14,7 +14,8 @@ import {
   sessionProgress,
   weeklyStats,
   workingSets
-} from "../src/core.js";
+} from "../src/core.ts";
+import type { WorkoutPlan, WorkoutSession } from "../src/types.ts";
 
 test("parseCsvLine handles commas and escaped quotes", () => {
   assert.deepEqual(
@@ -55,10 +56,10 @@ test("createSessionFromPlan creates target sets and carries previous values", ()
       restSeconds: 120,
       startingWeightKg: 50
     }]
-  };
-  const previous = {
+  } satisfies WorkoutPlan;
+  const previous: Pick<WorkoutSession, "exercises"> = {
     exercises: [{
-      id: "press",
+      ...plan.exercises[0],
       sets: [
         { setType: "warmup", weightKg: 20, reps: 10 },
         { setType: "working", weightKg: 50, reps: 10 },
@@ -79,28 +80,46 @@ test("createSessionFromPlan creates target sets and carries previous values", ()
 
 test("mergeSessions keeps the most recently updated copy", () => {
   const result = mergeSessions(
-    [{ id: "a", updatedAt: "2026-07-12T02:00:00Z", notes: "local" }],
-    [{ id: "a", updatedAt: "2026-07-12T01:00:00Z", notes: "remote" }]
+    [{ id: "a", date: "2026-07-12", exercises: [], updatedAt: "2026-07-12T02:00:00Z", notes: "local" }],
+    [{ id: "a", date: "2026-07-12", exercises: [], updatedAt: "2026-07-12T01:00:00Z", notes: "remote" }]
   );
   assert.equal(result[0].notes, "local");
 });
 
 test("previousSessionForPlan collects each exercise from its latest finished session", () => {
-  const sessions = [
+  const exerciseBase = {
+    name: "운동",
+    muscleGroup: "기타",
+    targetSets: 1,
+    repRange: [1, 20] as [number, number],
+    targetRpe: 7,
+    restSeconds: 60
+  };
+  const sessions: WorkoutSession[] = [
     {
+      id: "recent",
+      date: "2026-07-10",
       finishedAt: "2026-07-10T10:00:00Z",
-      exercises: [{ id: "row", sets: [{ weightKg: 60, reps: 10 }] }]
+      exercises: [{ ...exerciseBase, id: "row", sets: [{ weightKg: 60, reps: 10 }] }]
     },
     {
+      id: "older",
+      date: "2026-07-06",
       finishedAt: "2026-07-06T10:00:00Z",
-      exercises: [{ id: "bench", sets: [{ weightKg: 75, reps: 8 }] }]
+      exercises: [{ ...exerciseBase, id: "bench", sets: [{ weightKg: 75, reps: 8 }] }]
     }
   ];
   const previous = previousSessionForPlan(sessions, {
-    exercises: [{ id: "bench" }, { id: "row" }]
+    id: "plan",
+    date: "2026-07-12",
+    title: "Plan",
+    exercises: [
+      { ...exerciseBase, id: "bench" },
+      { ...exerciseBase, id: "row" }
+    ]
   });
 
-  assert.deepEqual(previous.exercises.map((exercise) => exercise.id), ["bench", "row"]);
+  assert.deepEqual(previous?.exercises.map((exercise) => exercise.id), ["bench", "row"]);
 });
 
 test("progress counts all checked sets while weekly stats exclude warmups", () => {
@@ -114,12 +133,15 @@ test("progress counts all checked sets while weekly stats exclude warmups", () =
       name: "풀업",
       muscleGroup: "등",
       targetSets: 2,
+      repRange: [6, 10],
+      targetRpe: 7,
+      restSeconds: 90,
       sets: [
         { completed: true, setType: "warmup", weightKg: "", reps: 8 },
         { completed: true, weightKg: 10, reps: 6 }
       ]
     }]
-  };
+  } satisfies WorkoutSession;
 
   assert.equal(completedSets(session).length, 2);
   assert.equal(workingSets(session).length, 1);
@@ -159,6 +181,6 @@ test("normalizeSeries indexes the first visible measurement to 100", () => {
     { date: "2026-07-03", weightKg: 69.2 }
   ], "weightKg");
 
-  assert.equal(normalized[0].normalizedValue, 100);
-  assert.equal(Number(normalized[1].normalizedValue.toFixed(2)), 96.51);
+  assert.equal(normalized[0]?.normalizedValue, 100);
+  assert.equal(Number(normalized[1]?.normalizedValue.toFixed(2)), 96.51);
 });

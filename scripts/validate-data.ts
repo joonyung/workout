@@ -1,35 +1,36 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { dataRoot } from "./runtime-paths.mjs";
+import { dataRoot } from "./runtime-paths.ts";
+import type { Gym, Profile, WorkoutPlan, WorkoutSession } from "../src/types.ts";
 
-const failures = [];
+const failures: string[] = [];
 
-function readJson(path) {
+function readJson<T>(path: string): T | null {
   try {
-    return JSON.parse(readFileSync(path, "utf8"));
+    return JSON.parse(readFileSync(path, "utf8")) as T;
   } catch (error) {
-    failures.push(`${path}: ${error.message}`);
+    failures.push(`${path}: ${error instanceof Error ? error.message : String(error)}`);
     return null;
   }
 }
 
-function expect(condition, message) {
+function expect(condition: unknown, message: string): void {
   if (!condition) failures.push(message);
 }
 
-function validateProfile(profile) {
+function validateProfile(profile: Profile | null): void {
   expect(profile?.schemaVersion === 1, "profile: schemaVersion must be 1");
   expect(typeof profile?.goal === "string" && profile.goal, "profile: goal is required");
   expect(
     Number.isInteger(profile?.trainingDaysPerWeek) &&
-      profile.trainingDaysPerWeek >= 1 &&
-      profile.trainingDaysPerWeek <= 7,
+      (profile?.trainingDaysPerWeek ?? 0) >= 1 &&
+      (profile?.trainingDaysPerWeek ?? 0) <= 7,
     "profile: trainingDaysPerWeek must be between 1 and 7"
   );
   expect(
     Number.isInteger(profile?.sessionMinutes) &&
-      profile.sessionMinutes >= 20 &&
-      profile.sessionMinutes <= 180,
+      (profile?.sessionMinutes ?? 0) >= 20 &&
+      (profile?.sessionMinutes ?? 0) <= 180,
     "profile: sessionMinutes must be between 20 and 180"
   );
   expect(
@@ -38,7 +39,7 @@ function validateProfile(profile) {
   );
 }
 
-function validateGym(gym) {
+function validateGym(gym: Gym | null): void {
   const validStatuses = new Set(["unknown", "available", "limited", "unavailable"]);
   expect(gym?.schemaVersion === 1, "gym: schemaVersion must be 1");
   expect(typeof gym?.id === "string" && gym.id, "gym: id is required");
@@ -53,7 +54,7 @@ function validateGym(gym) {
   }
 }
 
-function validatePlan(plan, gym) {
+function validatePlan(plan: WorkoutPlan | null, gym: Gym | null): void {
   const isRecoveryPlan = plan?.status === "recovery";
   expect(plan?.schemaVersion === 1, "plan: schemaVersion must be 1");
   expect(/^\d{4}-\d{2}-\d{2}$/.test(plan?.date || ""), "plan: date must use YYYY-MM-DD");
@@ -97,17 +98,17 @@ function validatePlan(plan, gym) {
   }
 }
 
-function validateWorkouts() {
+function validateWorkouts(): number {
   const directory = join(dataRoot, "workouts");
   if (!existsSync(directory)) return 0;
   const files = readdirSync(directory).filter((name) => name.endsWith(".json"));
 
   for (const file of files) {
-    const workout = readJson(join(directory, file));
+    const workout = readJson<WorkoutSession>(join(directory, file));
     expect(typeof workout?.id === "string" && workout.id, `${file}: workout id is required`);
     expect(/^\d{4}-\d{2}-\d{2}$/.test(workout?.date || ""), `${file}: invalid date`);
     expect(Array.isArray(workout?.exercises), `${file}: exercises must be an array`);
-    for (const exercise of workout.exercises || []) {
+    for (const exercise of workout?.exercises || []) {
       expect(Array.isArray(exercise?.sets), `${file}: ${exercise?.id || "exercise"} sets must be an array`);
       for (const set of exercise.sets || []) {
         expect(
@@ -121,21 +122,21 @@ function validateWorkouts() {
   return files.length;
 }
 
-const profile = readJson(join(dataRoot, "profile.json"));
-const gym = readJson(join(dataRoot, "gyms", "current.json"));
+const profile = readJson<Profile>(join(dataRoot, "profile.json"));
+const gym = readJson<Gym>(join(dataRoot, "gyms", "current.json"));
 const plansDirectory = join(dataRoot, "plans");
-const plan = readJson(join(plansDirectory, "current.json"));
+const plan = readJson<WorkoutPlan>(join(plansDirectory, "current.json"));
 
 validateProfile(profile);
 validateGym(gym);
 const planFiles = readdirSync(plansDirectory).filter((name) => name.endsWith(".json"));
 for (const file of planFiles) {
-  validatePlan(readJson(join(plansDirectory, file)), gym);
+  validatePlan(readJson<WorkoutPlan>(join(plansDirectory, file)), gym);
 }
 const datedPlanPath = join(plansDirectory, `${plan?.date}.json`);
 expect(existsSync(datedPlanPath), `plan: missing dated snapshot ${plan?.date}.json`);
 if (existsSync(datedPlanPath)) {
-  const datedPlan = readJson(datedPlanPath);
+  const datedPlan = readJson<WorkoutPlan>(datedPlanPath);
   expect(
     JSON.stringify(datedPlan) === JSON.stringify(plan),
     "plan: current.json must exactly match its dated snapshot"
@@ -148,4 +149,4 @@ if (failures.length) {
   process.exit(1);
 }
 
-console.log(`Data valid: 1 profile, ${gym.equipment.length} equipment items, ${planFiles.length} plans, ${workoutCount} workouts`);
+console.log(`Data valid: 1 profile, ${gym?.equipment.length || 0} equipment items, ${planFiles.length} plans, ${workoutCount} workouts`);

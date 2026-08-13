@@ -8,7 +8,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>__NODE_PATH__</string>
-    <string>__APP_ROOT__/current/scripts/dev-server.mjs</string>
+    <string>__APP_ROOT__/current/dist/server/dev-server.js</string>
   </array>
 
   <key>EnvironmentVariables</key>

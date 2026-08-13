@@ -34,6 +34,9 @@ npm run deploy:macmini
 `current` 심볼릭 링크를 교체한다. 새 서버의 헬스체크가 실패하면 이전
 릴리스로 자동 롤백한다.
 
+TypeScript는 맥북에서 `dist/`의 브라우저 번들과 Node.js 서버로 미리 컴파일된다.
+맥미니 운영 릴리스에는 개발 의존성이나 `node_modules`가 필요 없다.
+
 배포 후 확인:
 
 ```bash
@@ -57,7 +60,7 @@ curl -I https://workout.joonyung.work
 
 /Users/joonyung/Services/workout/
   current -> releases/<release-id>
-  releases/<release-id>/    # 변경하지 않는 앱 릴리스
+  releases/<release-id>/    # 컴파일된 dist/를 담는 변경 불가 앱 릴리스
   logs/
 ```
 

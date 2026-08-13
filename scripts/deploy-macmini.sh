@@ -25,6 +25,7 @@ case "$state_root" in
 esac
 
 echo "Validating local release..."
+npm run typecheck
 npm test
 npm run build
 
@@ -33,10 +34,6 @@ launch_agent="${temporary_directory}/com.joonyung.workout.plist"
 
 tar -czf "$release_archive" \
   dist \
-  package.json \
-  scripts/dev-server.mjs \
-  scripts/runtime-paths.mjs \
-  scripts/validate-data.mjs \
   scripts/activate-macmini-release.sh
 sed \
   -e "s|__APP_ROOT__|${app_root}|g" \
@@ -56,9 +53,9 @@ scp "$release_archive" "$launch_agent" \
 
 ssh "$remote_host" \
   "tar -xzf '${remote_staging}/release.tgz' -C '${app_root}/releases/${release_id}' && \
-   '${node_path}' --check '${app_root}/releases/${release_id}/scripts/dev-server.mjs' && \
+   '${node_path}' --check '${app_root}/releases/${release_id}/dist/server/dev-server.js' && \
    WORKOUT_STATE_ROOT='${state_root}' \
-     '${node_path}' '${app_root}/releases/${release_id}/scripts/validate-data.mjs' && \
+     '${node_path}' '${app_root}/releases/${release_id}/dist/server/validate-data.js' && \
    /bin/bash '${app_root}/releases/${release_id}/scripts/activate-macmini-release.sh' \
      '${app_root}' '${release_id}' '${remote_staging}/com.joonyung.workout.plist'"
 

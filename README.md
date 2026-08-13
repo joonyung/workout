@@ -7,7 +7,7 @@ A mobile-first workout logging PWA built around a simple coaching loop:
 3. The PWA guides the session and records each set.
 4. Completed sessions become context for the next plan and weekly review.
 
-The app uses plain HTML, CSS, JavaScript, and Node.js with no runtime package dependencies.
+The app uses TypeScript, plain HTML and CSS, and Node.js with no runtime package dependencies.
 
 ## Features
 
@@ -23,6 +23,7 @@ The app uses plain HTML, CSS, JavaScript, and Node.js with no runtime package de
 ```bash
 git clone https://github.com/joonyung/workout.git
 cd workout
+npm install
 npm run dev
 ```
 
@@ -58,6 +59,7 @@ Runtime paths can be changed with `WORKOUT_STATE_ROOT`, `WORKOUT_DATA_DIR`, and
 
 ```bash
 npm run dev             # Start the local server
+npm run typecheck       # Check the complete TypeScript project
 npm run coach:context   # Print concise coaching context
 npm run validate:data   # Validate runtime JSON files
 npm test                # Run deterministic tests
@@ -70,6 +72,9 @@ npm run deploy:macmini  # Deploy through the configured macmini SSH host
 The reference deployment runs the Node server on loopback under `launchd`, with a
 Cloudflare Tunnel and Cloudflare Access in front of it. Application releases and
 persistent state remain separate.
+
+The build bundles the browser client and compiles the production server into `dist/`.
+Production therefore needs only Node.js; TypeScript and build packages remain development-only.
 
 See [deployment instructions](docs/DEPLOYMENT.md), [coaching rules](docs/COACHING_PROTOCOL.md),
 and [agent instructions](AGENTS.md) for details.
