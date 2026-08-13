@@ -54,6 +54,33 @@ This app intentionally has no runtime package dependencies at the MVP stage.
 All data-aware commands use `state/` by default. Set `WORKOUT_STATE_ROOT`,
 `WORKOUT_DATA_DIR`, or `WORKOUT_INBODY_DIR` when the runtime state lives elsewhere.
 
+## Development and Deployment Environment
+
+Develop, test, commit, and deploy from the MacBook checkout at `~/Projects/workout`.
+The Mac mini is both the production server and an optional remote Codex workspace,
+reached with `ssh macmini`.
+
+Keep its workspace, persistent state, and releases separate:
+
+```text
+~/Projects/workout/     Git checkout, Codex workspace, and persistent `state/`
+~/Services/workout/     Immutable releases, `current` symlink, and service logs
+```
+
+- Edit source and runtime state only under `~/Projects/workout`.
+- Never edit `~/Services/workout/current` directly or put persistent state inside a release.
+- Prefer `npm run deploy:macmini` over ad hoc remote file changes.
+- Before deployment, run the documented validation and push the source Git remote.
+- When using the Mac mini checkout for Codex, update it with a fast-forward pull.
+- Verify the service locally on the Mac mini and through its protected public endpoint.
+
+Current production configuration:
+
+- Service manager: `launchd`, label `com.joonyung.workout`
+- Server: `127.0.0.1:5002`
+- Public endpoint: `https://workout.joonyung.work`, protected by Cloudflare Access
+- Deployment details: `docs/DEPLOYMENT.md`
+
 ## Data Handling
 
 - Runtime state is not Git-tracked. Never add `state/` with a force flag.
