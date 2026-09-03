@@ -1,4 +1,5 @@
 export type NumericInput = number | string | null;
+export type WeightUnit = "kg" | "lb";
 export type Readiness = "good" | "normal" | "tired";
 export type EquipmentStatus = "unknown" | "available" | "limited" | "unavailable";
 export type InBodyRange = "1y" | "2y" | "all";
@@ -28,11 +29,13 @@ export interface WorkoutSet {
   setNumber?: number;
   setType?: "warmup" | "working";
   weightKg?: NumericInput;
+  weightLb?: NumericInput;
   reps?: NumericInput;
   rpe?: NumericInput;
   completed?: boolean;
   completedAt?: string | null;
   previousWeightKg?: NumericInput;
+  previousWeightLb?: NumericInput;
   previousReps?: NumericInput;
   validForProgression?: boolean;
   load?: string;
@@ -47,6 +50,7 @@ export interface PlanExercise {
   targetRpe: number;
   restSeconds: number;
   startingWeightKg?: NumericInput;
+  startingWeightLb?: NumericInput;
   startingLoad?: string;
   equipmentId?: string;
   cue?: string;
@@ -116,6 +120,7 @@ export interface EquipmentItem {
   id: string;
   name?: string;
   status: EquipmentStatus;
+  loadUnit?: WeightUnit;
   notes?: string;
 }
 

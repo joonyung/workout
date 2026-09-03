@@ -41,6 +41,7 @@ function validateProfile(profile: Profile | null): void {
 
 function validateGym(gym: Gym | null): void {
   const validStatuses = new Set(["unknown", "available", "limited", "unavailable"]);
+  const validLoadUnits = new Set(["kg", "lb"]);
   expect(gym?.schemaVersion === 1, "gym: schemaVersion must be 1");
   expect(typeof gym?.id === "string" && gym.id, "gym: id is required");
   expect(Array.isArray(gym?.equipment), "gym: equipment must be an array");
@@ -50,6 +51,10 @@ function validateGym(gym: Gym | null): void {
     expect(typeof item.id === "string" && item.id, "gym: each equipment item needs an id");
     expect(!ids.has(item.id), `gym: duplicate equipment id ${item.id}`);
     expect(validStatuses.has(item.status), `gym: invalid status for ${item.id}`);
+    expect(
+      item.loadUnit === undefined || validLoadUnits.has(item.loadUnit),
+      `gym: invalid loadUnit for ${item.id}`
+    );
     ids.add(item.id);
   }
 }
@@ -65,6 +70,7 @@ function validatePlan(plan: WorkoutPlan | null, gym: Gym | null): void {
   );
   const ids = new Set();
   const equipmentIds = new Set((gym?.equipment || []).map((item) => item.id));
+  const equipmentById = new Map((gym?.equipment || []).map((item) => [item.id, item]));
 
   for (const exercise of plan?.exercises || []) {
     expect(typeof exercise.id === "string" && exercise.id, "plan: each exercise needs an id");
@@ -94,6 +100,16 @@ function validatePlan(plan: WorkoutPlan | null, gym: Gym | null): void {
         (exercise.substitutions || []).length > 0,
       `plan: unknown equipment without substitutions for ${exercise.id}`
     );
+    const hasStartingKg = exercise.startingWeightKg !== undefined && exercise.startingWeightKg !== null && exercise.startingWeightKg !== "";
+    const hasStartingLb = exercise.startingWeightLb !== undefined && exercise.startingWeightLb !== null && exercise.startingWeightLb !== "";
+    expect(!(hasStartingKg && hasStartingLb), `plan: ${exercise.id} cannot define both kg and lb starting weights`);
+    const equipmentUnit = exercise.equipmentId
+      ? equipmentById.get(exercise.equipmentId)?.loadUnit
+      : undefined;
+    expect(
+      !(equipmentUnit === "lb" && hasStartingKg),
+      `plan: ${exercise.id} must use startingWeightLb for lb equipment`
+    );
     ids.add(exercise.id);
   }
 }
@@ -115,6 +131,9 @@ function validateWorkouts(): number {
           set.setType === undefined || ["warmup", "working"].includes(set.setType),
           `${file}: ${set?.id || "set"} has an invalid setType`
         );
+        const hasKg = set.weightKg !== undefined && set.weightKg !== null && set.weightKg !== "";
+        const hasLb = set.weightLb !== undefined && set.weightLb !== null && set.weightLb !== "";
+        expect(!(hasKg && hasLb), `${file}: ${set?.id || "set"} cannot define both kg and lb weights`);
       }
     }
   }

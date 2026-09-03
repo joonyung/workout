@@ -4,7 +4,8 @@ import {
   bestLifts,
   mergeInBodyRows,
   parseInBodyCsv,
-  weeklyStats
+  weeklyStats,
+  workoutSetWeightKg
 } from "../src/core.ts";
 import {
   dataRoot,
@@ -94,6 +95,8 @@ const context = {
         set.completed && set.setType !== "warmup"
       )).map((set) => ({
         weightKg: set.weightKg,
+        weightLb: set.weightLb,
+        weightKgEquivalent: workoutSetWeightKg(set),
         reps: set.reps,
         rpe: set.rpe,
         validForProgression: set.validForProgression !== false
@@ -102,6 +105,8 @@ const context = {
         set.completed && set.setType === "warmup"
       )).map((set) => ({
         weightKg: set.weightKg,
+        weightLb: set.weightLb,
+        weightKgEquivalent: workoutSetWeightKg(set),
         reps: set.reps
       }))
     }))

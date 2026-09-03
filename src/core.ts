@@ -8,8 +8,11 @@ import type {
   NumericInput,
   WorkoutPlan,
   WorkoutSession,
+  WorkoutSet,
   WeeklyStats
 } from "./types.ts";
+
+export const KILOGRAMS_PER_POUND = 0.45359237;
 
 export function uid(prefix = "id"): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -24,6 +27,19 @@ export function numberOrNull(value: unknown): number | null {
   if (value === undefined || value === null || value === "" || value === "-") return null;
   const parsed = Number(String(value).replace(/,/g, ""));
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function poundsToKilograms(value: NumericInput | undefined): number | null {
+  const pounds = numberOrNull(value);
+  return pounds === null ? null : pounds * KILOGRAMS_PER_POUND;
+}
+
+export function workoutSetWeightKg(
+  set: Pick<WorkoutSet, "weightKg" | "weightLb">
+): number | null {
+  const pounds = numberOrNull(set.weightLb);
+  if (pounds !== null) return poundsToKilograms(pounds);
+  return numberOrNull(set.weightKg);
 }
 
 export function parseCsvLine(line: string): string[] {
@@ -167,6 +183,7 @@ export function createSessionFromPlan(
       phase: plan.phase
     },
     exercises: plan.exercises.map((exercise) => {
+      const usesPounds = exercise.startingWeightLb !== undefined;
       const previousExercise = previousSession?.exercises?.find((item) => item.id === exercise.id);
       const previousWorkingSets = previousExercise?.sets?.filter((set) => (
         set.setType !== "warmup" && set.validForProgression !== false
@@ -179,12 +196,15 @@ export function createSessionFromPlan(
             id: uid("set"),
             setNumber: index + 1,
             setType: "working",
-            weightKg: exercise.startingWeightKg ?? "",
+            ...(usesPounds
+              ? { weightLb: exercise.startingWeightLb ?? "" }
+              : { weightKg: exercise.startingWeightKg ?? "" }),
             reps: "",
             rpe: "",
             completed: false,
             completedAt: null,
             previousWeightKg: previousSet?.weightKg ?? null,
+            previousWeightLb: previousSet?.weightLb ?? null,
             previousReps: previousSet?.reps ?? null
           };
         })
@@ -280,7 +300,7 @@ export function weeklyStats(
     0
   );
   const tonnage = sets.reduce((sum, set) => {
-    const weight = numberOrNull(set.weightKg);
+    const weight = workoutSetWeightKg(set);
     const reps = numberOrNull(set.reps);
     return sum + (weight !== null && reps !== null ? weight * reps : 0);
   }, 0);
@@ -299,8 +319,13 @@ export function weeklyStats(
   };
 }
 
-export function e1rm(weight: NumericInput | undefined, reps: NumericInput | undefined): number {
-  const load = numberOrNull(weight);
+export function e1rm(
+  weight: NumericInput | undefined,
+  reps: NumericInput | undefined,
+  unit: "kg" | "lb" = "kg"
+): number {
+  const rawLoad = numberOrNull(weight);
+  const load = unit === "lb" ? poundsToKilograms(rawLoad) : rawLoad;
   const repetitions = numberOrNull(reps);
   if (load === null || repetitions === null || load <= 0 || repetitions <= 0) return 0;
   return load * (1 + repetitions / 30);
@@ -310,7 +335,7 @@ export function bestLifts(sessions: WorkoutSession[]): BestLift[] {
   const best: Record<string, BestLift> = {};
 
   for (const set of workingSets(sessions).filter((item) => item.validForProgression !== false)) {
-    const estimate = e1rm(set.weightKg, set.reps);
+    const estimate = e1rm(workoutSetWeightKg(set), set.reps);
     if (!estimate) continue;
     if (!best[set.exerciseId] || estimate > best[set.exerciseId].e1rm) {
       best[set.exerciseId] = {

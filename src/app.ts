@@ -13,7 +13,8 @@ import {
   sessionProgress,
   todayIso,
   uid,
-  weeklyStats
+  weeklyStats,
+  workoutSetWeightKg
 } from "./core.ts";
 import type {
   BootstrapPayload,
@@ -30,14 +31,15 @@ import type {
   SessionExercise,
   WorkoutPlan,
   WorkoutSession,
-  WorkoutSet
+  WorkoutSet,
+  WeightUnit
 } from "./types.ts";
 
 type InBodyKey = Extract<
   InBodyMetricKey,
   "weightKg" | "skeletalMuscleKg" | "bodyFatPercent"
 >;
-type SetField = "weightKg" | "reps" | "rpe";
+type SetField = "weightKg" | "weightLb" | "reps" | "rpe";
 type RangeWindow = ReturnType<typeof inBodyWindow>;
 
 const QA_MODE = new URLSearchParams(window.location.search).get("qa") === "1";
@@ -424,16 +426,20 @@ function addSet(exerciseId: string): void {
   if (!session || !exercise) return;
 
   const previousSet = exercise.sets.at(-1);
+  const usesPounds = exerciseWeightUnit(exercise) === "lb";
   exercise.sets.push({
     id: uid("set"),
     setNumber: exercise.sets.length + 1,
     setType: "working",
-    weightKg: previousSet?.weightKg || "",
+    ...(usesPounds
+      ? { weightLb: previousSet?.weightLb || "" }
+      : { weightKg: previousSet?.weightKg || "" }),
     reps: "",
     rpe: "",
     completed: false,
     completedAt: null,
     previousWeightKg: null,
+    previousWeightLb: null,
     previousReps: null
   });
   touchSession(session);
@@ -608,18 +614,38 @@ function planSetCount(plan: WorkoutPlan | null = state.plan): number {
 }
 
 function exerciseStartingLoad(exercise: PlanExercise): string {
+  if (numberOrNull(exercise.startingWeightLb) !== null) {
+    return `${exercise.startingWeightLb}lb`;
+  }
   if (numberOrNull(exercise.startingWeightKg) !== null) {
     return `${exercise.startingWeightKg}kg`;
   }
   return exercise.startingLoad || "";
 }
 
+function exerciseWeightUnit(exercise: PlanExercise | SessionExercise): WeightUnit {
+  if (
+    exercise.startingWeightLb !== undefined ||
+    ("sets" in exercise && exercise.sets.some((set) => set.weightLb !== undefined))
+  ) return "lb";
+  return "kg";
+}
+
+function workoutSetRawWeight(set: WorkoutSet): { value: number | null; unit: WeightUnit } {
+  const pounds = numberOrNull(set.weightLb);
+  if (pounds !== null) return { value: pounds, unit: "lb" };
+  return { value: numberOrNull(set.weightKg), unit: "kg" };
+}
+
+function workoutSetLoadText(set: WorkoutSet): string {
+  if (set.load) return set.load;
+  const { value, unit } = workoutSetRawWeight(set);
+  return value === null ? "BW" : `${value}${unit}`;
+}
+
 function exerciseWarmupText(exercise: PlanExercise | SessionExercise): string {
   return (exercise.warmupSets || []).map((set) => {
-    if (set.load) return `${set.load} × ${set.reps}`;
-    const weight = numberOrNull(set.weightKg);
-    const load = weight === null ? "체중" : `${weight}kg`;
-    return `${load} × ${set.reps}`;
+    return `${workoutSetLoadText(set)} × ${set.reps}`;
   }).join(" · ");
 }
 
@@ -837,14 +863,18 @@ function renderActiveWorkout(session: WorkoutSession): string {
 
 function previousSetText(set: WorkoutSet): string {
   if (numberOrNull(set.previousReps) === null) return "이전 -";
+  const pounds = numberOrNull(set.previousWeightLb);
+  if (pounds !== null) return `이전 ${pounds}lb×${set.previousReps}`;
   const weight = numberOrNull(set.previousWeightKg);
-  return weight === null ? `이전 ×${set.previousReps}` : `이전 ${weight}×${set.previousReps}`;
+  return weight === null ? `이전 ×${set.previousReps}` : `이전 ${weight}kg×${set.previousReps}`;
 }
 
 function renderExercise(exercise: SessionExercise): string {
   const completedCount = exercise.sets.filter((set) => set.completed).length;
   const nextSet = exercise.sets.find((set) => !set.completed);
   const progress = exercise.sets.length ? completedCount / exercise.sets.length : 0;
+  const weightUnit = exerciseWeightUnit(exercise);
+  const weightField: "weightKg" | "weightLb" = weightUnit === "lb" ? "weightLb" : "weightKg";
   return `
     <article class="exercise-card ${progress === 1 ? "is-complete" : ""}"
       style="--exercise-progress:${Math.round(progress * 100)}%">
@@ -873,7 +903,7 @@ function renderExercise(exercise: SessionExercise): string {
         </p>
       ` : ""}
       <div class="set-grid set-labels" aria-hidden="true">
-        <span>세트</span><span>kg</span><span>횟수</span><span>RPE</span><span>완료</span>
+        <span>세트</span><span>${weightUnit}</span><span>횟수</span><span>RPE</span><span>완료</span>
       </div>
       <div class="sets">
         ${exercise.sets.map((set) => `
@@ -884,8 +914,8 @@ function renderExercise(exercise: SessionExercise): string {
             </div>
             <label>
               <span class="sr-only">${exercise.name} ${set.setNumber}세트 중량</span>
-              <input inputmode="decimal" value="${escapeHtml(set.weightKg)}"
-                data-exercise="${exercise.id}" data-set="${set.id}" data-field="weightKg"
+              <input inputmode="decimal" value="${escapeHtml(set[weightField])}"
+                data-exercise="${exercise.id}" data-set="${set.id}" data-field="${weightField}"
                 placeholder="0" />
             </label>
             <label>
@@ -954,9 +984,8 @@ function renderFinishedWorkout(session: WorkoutSession): string {
                 <span>${escapeHtml(exercise.muscleGroup)}</span>
               </div>
               <span>${sets.map((set) => {
-                const weight = numberOrNull(set.weightKg);
                 const type = set.setType === "warmup" ? "워밍업 " : "";
-                return `${type}${weight === null ? "BW" : `${weight}kg`} × ${set.reps}`;
+                return `${type}${workoutSetLoadText(set)} × ${set.reps}`;
               }).join(" · ") || "기록 없음"}</span>
             </div>
           `;
@@ -990,7 +1019,7 @@ function sessionWarmupSets(session: WorkoutSession): WorkoutSet[] {
 }
 
 function setTonnage(set: WorkoutSet): number {
-  const weight = numberOrNull(set.weightKg);
+  const weight = workoutSetWeightKg(set);
   const reps = numberOrNull(set.reps);
   return weight === null || reps === null ? 0 : weight * reps;
 }
@@ -1062,7 +1091,7 @@ function renderMuscleDistribution(session: WorkoutSession): string {
 }
 
 function renderHistorySet(set: WorkoutSet, index: number): string {
-  const weight = numberOrNull(set.weightKg);
+  const { value: weight } = workoutSetRawWeight(set);
   const rpe = numberOrNull(set.rpe);
   return `
     <div class="history-set-row ${set.setType === "warmup" ? "warmup" : ""}">
@@ -1080,6 +1109,7 @@ function renderHistoryExercise(exercise: SessionExercise): string {
   const workingSets = completedWorkingSetsForExercise(exercise);
   const warmupSets = completedWarmupSetsForExercise(exercise);
   const allSets = [...warmupSets, ...workingSets];
+  const weightUnit = exerciseWeightUnit(exercise);
   if (!allSets.length) return "";
 
   return `
@@ -1096,7 +1126,7 @@ function renderHistoryExercise(exercise: SessionExercise): string {
       </header>
       <div class="history-set-table">
         <div class="history-set-labels" aria-hidden="true">
-          <span>세트</span><span>kg</span><span>횟수</span><span>RPE</span>
+          <span>세트</span><span>${weightUnit}</span><span>횟수</span><span>RPE</span>
         </div>
         ${allSets.map(renderHistorySet).join("")}
       </div>

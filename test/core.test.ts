@@ -10,10 +10,12 @@ import {
   parseCsvLine,
   parseInBodyCsv,
   planNeedsRefresh,
+  poundsToKilograms,
   previousSessionForPlan,
   sessionProgress,
   weeklyStats,
-  workingSets
+  workingSets,
+  workoutSetWeightKg
 } from "../src/core.ts";
 import type { WorkoutPlan, WorkoutSession } from "../src/types.ts";
 
@@ -76,6 +78,35 @@ test("createSessionFromPlan creates target sets and carries previous values", ()
   assert.equal(session.exercises[0].sets[0].rpe, "");
   assert.equal(session.exercises[0].sets[0].previousWeightKg, 50);
   assert.equal(session.exercises[0].sets[1].previousReps, 9);
+});
+
+test("createSessionFromPlan preserves pounds for lb-based plans", () => {
+  const plan = {
+    id: "plan-lb",
+    date: "2026-09-03",
+    title: "LB machine",
+    exercises: [{
+      id: "leg-extension",
+      name: "Leg Extension",
+      muscleGroup: "하체",
+      targetSets: 2,
+      repRange: [12, 15],
+      targetRpe: 7,
+      restSeconds: 90,
+      startingWeightLb: 70
+    }]
+  } satisfies WorkoutPlan;
+  const previous: Pick<WorkoutSession, "exercises"> = {
+    exercises: [{
+      ...plan.exercises[0],
+      sets: [{ setType: "working", weightLb: 75, reps: 15 }]
+    }]
+  };
+
+  const session = createSessionFromPlan(plan, previous, new Date("2026-09-03T08:00:00+09:00"));
+  assert.equal(session.exercises[0].sets[0].weightLb, 70);
+  assert.equal("weightKg" in session.exercises[0].sets[0], false);
+  assert.equal(session.exercises[0].sets[0].previousWeightLb, 75);
 });
 
 test("mergeSessions keeps the most recently updated copy", () => {
@@ -149,6 +180,33 @@ test("progress counts all checked sets while weekly stats exclude warmups", () =
   const stats = weeklyStats([session], new Date("2026-07-12T12:00:00+09:00"));
   assert.equal(stats.completed, 1);
   assert.equal(stats.tonnage, 60);
+});
+
+test("lb sets stay in pounds and convert only for kg-based calculations", () => {
+  const session = {
+    id: "lb-session",
+    date: "2026-09-03",
+    finishedAt: "2026-09-03T10:00:00Z",
+    exercises: [{
+      id: "leg-extension",
+      name: "Leg Extension",
+      muscleGroup: "하체",
+      targetSets: 2,
+      repRange: [12, 15],
+      targetRpe: 7,
+      restSeconds: 90,
+      startingWeightLb: 70,
+      sets: [
+        { completed: true, weightLb: 70, reps: 15 },
+        { completed: true, weightLb: 75, reps: 15 }
+      ]
+    }]
+  } satisfies WorkoutSession;
+
+  assert.equal(poundsToKilograms(70)?.toFixed(2), "31.75");
+  assert.equal(workoutSetWeightKg(session.exercises[0].sets[1])?.toFixed(2), "34.02");
+  assert.equal("weightKg" in session.exercises[0].sets[0], false);
+  assert.equal(weeklyStats([session], new Date("2026-09-03T12:00:00+09:00")).tonnage.toFixed(2), "986.56");
 });
 
 test("planNeedsRefresh compares plan and local date", () => {
