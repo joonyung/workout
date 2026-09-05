@@ -109,6 +109,14 @@ const context = {
         weightKgEquivalent: workoutSetWeightKg(set),
         reps: set.reps
       }))
+    })),
+    cardio: (session.cardio || []).filter((item) => item.completed).map((item) => ({
+      id: item.id,
+      name: item.name,
+      durationMinutes: item.durationMinutes,
+      distanceKm: item.distanceKm,
+      averageHeartRate: item.averageHeartRate,
+      rpe: item.rpe
     }))
   })),
   currentWeek: weeklyStats(sessions),

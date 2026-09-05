@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  completedCardio,
   completedSets,
   createSessionFromPlan,
   inBodyWindow,
@@ -109,6 +110,31 @@ test("createSessionFromPlan preserves pounds for lb-based plans", () => {
   assert.equal(session.exercises[0].sets[0].previousWeightLb, 75);
 });
 
+test("createSessionFromPlan creates separately tracked cardio entries", () => {
+  const plan = {
+    id: "plan-cardio",
+    date: "2026-09-06",
+    title: "Strength and cardio",
+    exercises: [],
+    cardio: [{
+      id: "bike",
+      name: "Recumbent Bike",
+      targetMinutes: 15,
+      rpeRange: [4, 5]
+    }]
+  } satisfies WorkoutPlan;
+
+  const session = createSessionFromPlan(plan, null, new Date("2026-09-06T08:00:00+09:00"));
+  assert.equal(session.cardio?.[0].durationMinutes, 15);
+  assert.equal(session.cardio?.[0].distanceKm, "");
+  assert.equal(session.cardio?.[0].completed, false);
+  assert.equal(sessionProgress(session).total, 1);
+  session.cardio![0].rpe = 4.5;
+  session.cardio![0].completed = true;
+  assert.equal(completedCardio(session).length, 1);
+  assert.equal(sessionProgress(session).ratio, 1);
+});
+
 test("mergeSessions keeps the most recently updated copy", () => {
   const result = mergeSessions(
     [{ id: "a", date: "2026-07-12", exercises: [], updatedAt: "2026-07-12T02:00:00Z", notes: "local" }],
@@ -207,6 +233,32 @@ test("lb sets stay in pounds and convert only for kg-based calculations", () => 
   assert.equal(workoutSetWeightKg(session.exercises[0].sets[1])?.toFixed(2), "34.02");
   assert.equal("weightKg" in session.exercises[0].sets[0], false);
   assert.equal(weeklyStats([session], new Date("2026-09-03T12:00:00+09:00")).tonnage.toFixed(2), "986.56");
+});
+
+test("weeklyStats reports cardio duration separately from strength volume", () => {
+  const session = {
+    id: "mixed-session",
+    date: "2026-09-06",
+    finishedAt: "2026-09-06T10:00:00Z",
+    exercises: [],
+    cardio: [{
+      id: "bike",
+      name: "Bike",
+      targetMinutes: 15,
+      rpeRange: [4, 5],
+      durationMinutes: 18,
+      distanceKm: 6.2,
+      averageHeartRate: 128,
+      rpe: 5,
+      completed: true,
+      completedAt: "2026-09-06T09:55:00Z"
+    }]
+  } satisfies WorkoutSession;
+
+  const stats = weeklyStats([session], new Date("2026-09-06T12:00:00+09:00"));
+  assert.equal(stats.tonnage, 0);
+  assert.equal(stats.cardioMinutes, 18);
+  assert.equal(stats.targetCardioMinutes, 15);
 });
 
 test("planNeedsRefresh compares plan and local date", () => {

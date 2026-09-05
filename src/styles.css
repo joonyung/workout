@@ -748,6 +748,66 @@ h3 {
   background: var(--surface);
 }
 
+.cardio-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) 44px;
+  gap: 6px;
+  align-items: center;
+}
+
+.cardio-labels {
+  border-top: 1px solid var(--separator-soft);
+  border-bottom: 1px solid var(--separator-soft);
+  background: var(--surface-raised);
+  padding: 7px 10px;
+  color: var(--tertiary);
+  font-size: 9px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.cardio-row {
+  min-height: 68px;
+  padding: 7px 10px;
+}
+
+.cardio-row.completed {
+  background: var(--green-soft);
+  box-shadow: inset 3px 0 var(--green);
+}
+
+.cardio-row label {
+  min-width: 0;
+  text-align: center;
+}
+
+.cardio-row input {
+  width: 100%;
+  min-height: 42px;
+  border-color: transparent;
+  background: var(--surface-raised);
+  padding: 6px 2px;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.cardio-row label small {
+  display: block;
+  margin-top: 2px;
+  color: var(--tertiary);
+  font-size: 8px;
+}
+
+.cardio-row.completed input {
+  background: var(--surface);
+}
+
+.cardio-footer {
+  justify-content: flex-end;
+}
+
 .check-button {
   display: grid;
   width: 44px;
@@ -868,7 +928,7 @@ h3 {
 
 .history-overview {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   margin: 0 -16px 16px;
   border-top: 1px solid var(--separator-soft);
   border-bottom: 1px solid var(--separator-soft);
@@ -877,7 +937,7 @@ h3 {
 
 .history-overview > div {
   min-width: 0;
-  padding: 14px 16px 13px;
+  padding: 14px 10px 13px;
   border-right: 1px solid var(--separator-soft);
 }
 
@@ -1166,6 +1226,16 @@ h3 {
   font-size: 12px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+}
+
+.history-cardio-detail {
+  border: 1px solid var(--separator-soft);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 11px 12px;
+  color: var(--secondary);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .history-set-table {
@@ -1926,6 +1996,21 @@ canvas {
   .set-grid {
     grid-template-columns: 44px minmax(40px, 1fr) minmax(38px, 0.8fr) 48px 42px;
     gap: 4px;
+  }
+
+  .cardio-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr)) 42px;
+    gap: 4px;
+  }
+
+  .cardio-labels,
+  .cardio-row {
+    padding-right: 7px;
+    padding-left: 7px;
+  }
+
+  .cardio-row input {
+    font-size: 14px;
   }
 
   .set-labels,

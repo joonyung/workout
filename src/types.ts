@@ -62,6 +62,25 @@ export interface SessionExercise extends PlanExercise {
   sets: WorkoutSet[];
 }
 
+export interface PlanCardio {
+  id: string;
+  name: string;
+  targetMinutes: number;
+  rpeRange: [number, number];
+  equipmentId?: string;
+  cue?: string;
+  substitutions?: string[];
+}
+
+export interface SessionCardio extends PlanCardio {
+  durationMinutes: NumericInput;
+  distanceKm: NumericInput;
+  averageHeartRate: NumericInput;
+  rpe: NumericInput;
+  completed: boolean;
+  completedAt: string | null;
+}
+
 export interface WorkoutPlan {
   schemaVersion?: number;
   id: string;
@@ -80,6 +99,7 @@ export interface WorkoutPlan {
   recoveryGuidance?: string;
   recoveryActions?: Array<{ title: string; detail: string }>;
   exercises: PlanExercise[];
+  cardio?: PlanCardio[];
 }
 
 export interface WorkoutSession {
@@ -106,6 +126,7 @@ export interface WorkoutSession {
     phase?: string;
   };
   exercises: SessionExercise[];
+  cardio?: SessionCardio[];
 }
 
 export interface CompletedSet extends WorkoutSet {
@@ -168,6 +189,8 @@ export interface WeeklyStats {
   adherence: number;
   tonnage: number;
   byMuscle: Record<string, number>;
+  cardioMinutes: number;
+  targetCardioMinutes: number;
 }
 
 export interface BestLift {

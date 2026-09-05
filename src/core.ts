@@ -9,7 +9,8 @@ import type {
   WorkoutPlan,
   WorkoutSession,
   WorkoutSet,
-  WeeklyStats
+  WeeklyStats,
+  SessionCardio
 } from "./types.ts";
 
 export const KILOGRAMS_PER_POUND = 0.45359237;
@@ -157,7 +158,11 @@ export function createSessionFromPlan(
   previousSession: Pick<WorkoutSession, "exercises"> | null = null,
   now = new Date()
 ): WorkoutSession {
-  if (!plan?.id || !Array.isArray(plan.exercises) || !plan.exercises.length) {
+  if (
+    !plan?.id ||
+    !Array.isArray(plan.exercises) ||
+    (!plan.exercises.length && !(plan.cardio || []).length)
+  ) {
     throw new Error("A valid plan is required to create a session.");
   }
 
@@ -209,8 +214,26 @@ export function createSessionFromPlan(
           };
         })
       };
-    })
+    }),
+    cardio: (plan.cardio || []).map((item) => ({
+      ...item,
+      durationMinutes: item.targetMinutes,
+      distanceKm: "",
+      averageHeartRate: "",
+      rpe: "",
+      completed: false,
+      completedAt: null
+    }))
   };
+}
+
+export function completedCardio(
+  source: WorkoutSession | WorkoutSession[] | null | undefined
+): SessionCardio[] {
+  const sessions = Array.isArray(source) ? source : source ? [source] : [];
+  return sessions.flatMap((session) => (
+    (session.cardio || []).filter((item) => item.completed)
+  ));
 }
 
 export function mergeSessions(
@@ -265,11 +288,12 @@ export function sessionProgress(session: WorkoutSession | null | undefined): {
   completed: number;
   ratio: number;
 } {
-  const total = (session?.exercises || []).reduce(
+  const strengthTotal = (session?.exercises || []).reduce(
     (sum, exercise) => sum + (exercise.sets?.length || exercise.targetSets || 0),
     0
   );
-  const completed = completedSets(session).length;
+  const total = strengthTotal + (session?.cardio || []).length;
+  const completed = completedSets(session).length + completedCardio(session).length;
   return {
     total,
     completed,
@@ -308,6 +332,17 @@ export function weeklyStats(
     result[set.muscleGroup] = (result[set.muscleGroup] || 0) + 1;
     return result;
   }, {});
+  const cardioMinutes = completedCardio(weekSessions).reduce(
+    (sum, item) => sum + (numberOrNull(item.durationMinutes) || 0),
+    0
+  );
+  const targetCardioMinutes = weekSessions.reduce(
+    (sum, session) => sum + (session.cardio || []).reduce(
+      (cardioSum, item) => cardioSum + (numberOrNull(item.targetMinutes) || 0),
+      0
+    ),
+    0
+  );
 
   return {
     sessions: weekSessions.filter((session) => session.finishedAt).length,
@@ -315,7 +350,9 @@ export function weeklyStats(
     targetSets,
     adherence: targetSets ? sets.length / targetSets : 0,
     tonnage,
-    byMuscle
+    byMuscle,
+    cardioMinutes,
+    targetCardioMinutes
   };
 }
 

@@ -1,5 +1,6 @@
 import {
   bestLifts,
+  completedCardio,
   completedSets,
   createSessionFromPlan,
   inBodyWindow,
@@ -28,6 +29,7 @@ import type {
   PlanExercise,
   Profile,
   Readiness,
+  SessionCardio,
   SessionExercise,
   WorkoutPlan,
   WorkoutSession,
@@ -40,6 +42,7 @@ type InBodyKey = Extract<
   "weightKg" | "skeletalMuscleKg" | "bodyFatPercent"
 >;
 type SetField = "weightKg" | "weightLb" | "reps" | "rpe";
+type CardioField = "durationMinutes" | "distanceKm" | "averageHeartRate" | "rpe";
 type RangeWindow = ReturnType<typeof inBodyWindow>;
 
 const QA_MODE = new URLSearchParams(window.location.search).get("qa") === "1";
@@ -147,7 +150,8 @@ function loadLocalState() {
       state.sessions = state.sessions.filter((session) => !(
         session.templateId &&
         !session.finishedAt &&
-        !completedSets(session).length
+        !completedSets(session).length &&
+        !completedCardio(session).length
       ));
       if (!["1y", "2y", "all"].includes(state.inBodyRange)) {
         state.inBodyRange = "1y";
@@ -172,6 +176,7 @@ function loadLocalState() {
     state.sessions = (legacy.sessions || [])
       .filter((session) => (
         session.finishedAt ||
+        completedCardio(session).length ||
         (session.exercises || []).some((exercise) => (
           (exercise.sets || []).some((set) => set.completed)
         ))
@@ -420,6 +425,41 @@ function toggleSet(exerciseId: string, setId: string): void {
   render();
 }
 
+function updateCardio(cardioId: string, field: CardioField, value: string): void {
+  const session = activeSession();
+  const cardio = session?.cardio?.find((item) => item.id === cardioId);
+  if (!session || !cardio) return;
+
+  cardio[field] = value;
+  touchSession(session);
+}
+
+function toggleCardio(cardioId: string): void {
+  const session = activeSession();
+  const cardio = session?.cardio?.find((item) => item.id === cardioId);
+  if (!session || !cardio) return;
+
+  if (!cardio.completed && (numberOrNull(cardio.durationMinutes) || 0) <= 0) {
+    document.querySelector<HTMLInputElement>(
+      `[data-cardio="${cardioId}"][data-cardio-field="durationMinutes"]`
+    )?.focus();
+    showToast("유산소 시간을 먼저 입력하세요.");
+    return;
+  }
+  if (!cardio.completed && numberOrNull(cardio.rpe) === null) {
+    document.querySelector<HTMLInputElement>(
+      `[data-cardio="${cardioId}"][data-cardio-field="rpe"]`
+    )?.focus();
+    showToast("유산소가 끝났을 때의 실제 RPE를 입력하세요.");
+    return;
+  }
+
+  cardio.completed = !cardio.completed;
+  cardio.completedAt = cardio.completed ? new Date().toISOString() : null;
+  touchSession(session);
+  render();
+}
+
 function addSet(exerciseId: string): void {
   const session = activeSession();
   const exercise = session?.exercises?.find((item) => item.id === exerciseId);
@@ -448,8 +488,8 @@ function addSet(exerciseId: string): void {
 
 function openFinishSheet() {
   const session = activeSession();
-  if (!session || !completedSets(session).length) {
-    showToast("완료한 세트가 아직 없습니다.");
+  if (!session || (!completedSets(session).length && !completedCardio(session).length)) {
+    showToast("완료한 운동이 아직 없습니다.");
     return;
   }
   state.finishSheetOpen = true;
@@ -613,6 +653,14 @@ function planSetCount(plan: WorkoutPlan | null = state.plan): number {
   return (plan?.exercises || []).reduce((sum, exercise) => sum + exercise.targetSets, 0);
 }
 
+function planCardioMinutes(plan: WorkoutPlan | null = state.plan): number {
+  return (plan?.cardio || []).reduce((sum, item) => sum + item.targetMinutes, 0);
+}
+
+function planActivityCount(plan: WorkoutPlan | null = state.plan): number {
+  return planSetCount(plan) + (plan?.cardio || []).length;
+}
+
 function exerciseStartingLoad(exercise: PlanExercise): string {
   if (numberOrNull(exercise.startingWeightLb) !== null) {
     return `${exercise.startingWeightLb}lb`;
@@ -675,7 +723,9 @@ function renderReadiness(selected: Readiness): string {
 function renderPlanHeader(session: WorkoutSession | null = null): string {
   const plan = state.plan;
   const isRecoveryPlan = plan?.status === "recovery";
-  const progress = session ? sessionProgress(session) : { completed: 0, total: planSetCount(plan), ratio: 0 };
+  const progress = session
+    ? sessionProgress(session)
+    : { completed: 0, total: planActivityCount(plan), ratio: 0 };
   const stale = planNeedsRefresh(plan);
 
   return `
@@ -692,7 +742,7 @@ function renderPlanHeader(session: WorkoutSession | null = null): string {
           </div>
         ` : `
           <div class="progress-ring" style="--progress:${Math.round(progress.ratio * 100)}"
-            aria-label="${progress.completed} / ${progress.total} 세트 완료">
+            aria-label="${progress.completed} / ${progress.total} 운동 항목 완료">
             <strong>${progress.completed}</strong>
             <span>/${progress.total}</span>
           </div>
@@ -706,6 +756,7 @@ function renderPlanHeader(session: WorkoutSession | null = null): string {
           ` : `
             <span>${plan.estimatedMinutes || "-"}분</span>
             <span>${planSetCount(plan)}세트</span>
+            ${planCardioMinutes(plan) ? `<span>유산소 ${planCardioMinutes(plan)}분</span>` : ""}
           `}
           <span>${escapeHtml(plan.phase || "Plan")}</span>
           <span>Codex</span>
@@ -808,7 +859,7 @@ function renderWorkoutPreview() {
       <div class="section-heading">
         <div>
           <span class="section-kicker">프로그램</span>
-          <h2>${plan.exercises.length}개 운동</h2>
+          <h2>${plan.exercises.length}개 근력${(plan.cardio || []).length ? ` · ${(plan.cardio || []).length}개 유산소` : ""}</h2>
         </div>
         <span class="status-text">RPE 기준</span>
       </div>
@@ -825,6 +876,16 @@ function renderWorkoutPreview() {
             <span class="rest-label">${Math.round(exercise.restSeconds / 30) * 0.5}분</span>
           </div>
         `).join("")}
+        ${(plan.cardio || []).map((cardio, index) => `
+          <div class="preview-row cardio-preview-row">
+            <span class="preview-index">${String(plan.exercises.length + index + 1).padStart(2, "0")}</span>
+            <div>
+              <strong>${escapeHtml(cardio.name)}</strong>
+              <span>유산소 · ${cardio.targetMinutes}분 · RPE ${cardio.rpeRange.join("-")}</span>
+            </div>
+            <span class="rest-label">기록</span>
+          </div>
+        `).join("")}
       </div>
     </section>
     <div class="primary-action">
@@ -838,13 +899,14 @@ function renderActiveWorkout(session: WorkoutSession): string {
     <section class="content-section workout-section">
       <div class="section-heading">
         <div>
-          <span class="section-kicker">작업 세트</span>
-          <h2>세트 기록</h2>
+          <span class="section-kicker">작업 세트 · 유산소</span>
+          <h2>운동 기록</h2>
         </div>
         <span class="status-text">자동 저장</span>
       </div>
       <div class="exercise-list">
         ${session.exercises.map(renderExercise).join("")}
+        ${(session.cardio || []).map(renderCardio).join("")}
       </div>
     </section>
     <section class="coach-notes">
@@ -858,6 +920,73 @@ function renderActiveWorkout(session: WorkoutSession): string {
     <div class="primary-action">
       <button class="primary-button" data-action="open-finish">운동 완료</button>
     </div>
+  `;
+}
+
+function renderCardio(cardio: SessionCardio): string {
+  const progress = cardio.completed ? 1 : 0;
+  return `
+    <article class="exercise-card cardio-card ${cardio.completed ? "is-complete" : ""}"
+      style="--exercise-progress:${progress * 100}%">
+      <header class="exercise-header">
+        <div>
+          <span class="exercise-muscle">유산소</span>
+          <h3>${escapeHtml(cardio.name)}</h3>
+        </div>
+        <div class="exercise-target">
+          <strong>${cardio.targetMinutes}분</strong>
+          <span>RPE ${cardio.rpeRange.join("-")}</span>
+        </div>
+      </header>
+      <div class="exercise-progress" aria-label="${cardio.completed ? "유산소 완료" : "유산소 미완료"}">
+        <span style="width:var(--exercise-progress)"></span>
+      </div>
+      ${cardio.cue ? `<p class="exercise-cue">${escapeHtml(cardio.cue)}</p>` : ""}
+      <div class="cardio-grid cardio-labels" aria-hidden="true">
+        <span>시간</span><span>거리</span><span>평균 심박</span><span>RPE</span><span>완료</span>
+      </div>
+      <div class="cardio-grid cardio-row ${cardio.completed ? "completed" : ""}">
+        <label>
+          <span class="sr-only">${cardio.name} 시간(분)</span>
+          <input inputmode="decimal" value="${escapeHtml(cardio.durationMinutes)}"
+            data-cardio="${cardio.id}" data-cardio-field="durationMinutes"
+            min="1" max="600" placeholder="${cardio.targetMinutes}" />
+          <small>분</small>
+        </label>
+        <label>
+          <span class="sr-only">${cardio.name} 거리(km)</span>
+          <input inputmode="decimal" value="${escapeHtml(cardio.distanceKm)}"
+            data-cardio="${cardio.id}" data-cardio-field="distanceKm"
+            min="0" step="0.1" placeholder="선택" />
+          <small>km</small>
+        </label>
+        <label>
+          <span class="sr-only">${cardio.name} 평균 심박수</span>
+          <input inputmode="numeric" value="${escapeHtml(cardio.averageHeartRate)}"
+            data-cardio="${cardio.id}" data-cardio-field="averageHeartRate"
+            min="20" max="250" placeholder="선택" />
+          <small>bpm</small>
+        </label>
+        <label>
+          <span class="sr-only">${cardio.name} RPE</span>
+          <input inputmode="decimal" value="${escapeHtml(cardio.rpe)}"
+            data-cardio="${cardio.id}" data-cardio-field="rpe"
+            min="1" max="10" step="0.5" placeholder="${cardio.rpeRange.join("-")}" />
+          <small>1–10</small>
+        </label>
+        <button class="check-button" data-action="toggle-cardio" data-cardio="${cardio.id}"
+          aria-label="${cardio.completed ? "유산소 완료 취소" : "유산소 완료"}"
+          aria-pressed="${cardio.completed}" title="${cardio.completed ? "완료 취소" : "완료"}">✓</button>
+      </div>
+      ${cardio.substitutions?.length ? `
+        <footer class="exercise-footer cardio-footer">
+          <details class="substitution">
+            <summary>대체 유산소</summary>
+            <span>${cardio.substitutions.map(escapeHtml).join(" · ")}</span>
+          </details>
+        </footer>
+      ` : ""}
+    </article>
   `;
 }
 
@@ -952,7 +1081,11 @@ function renderExercise(exercise: SessionExercise): string {
 }
 
 function renderFinishedWorkout(session: WorkoutSession): string {
-  const progress = sessionProgress(session);
+  const cardio = completedCardio(session);
+  const cardioMinutes = cardio.reduce(
+    (sum, item) => sum + (numberOrNull(item.durationMinutes) || 0),
+    0
+  );
   const durationMinutes = Math.max(
     1,
     Math.round((Date.parse(session.finishedAt || "") - Date.parse(session.startedAt || "")) / 60_000)
@@ -963,7 +1096,7 @@ function renderFinishedWorkout(session: WorkoutSession): string {
     <section class="completion-hero">
       <div class="completion-mark" aria-hidden="true">✓</div>
       <h2>오늘 운동 완료</h2>
-      <p>${progress.completed}세트 · ${durationMinutes}분 · 세션 RPE
+      <p>${completedSets(session).length}세트${cardioMinutes ? ` · 유산소 ${cardioMinutes}분` : ""} · ${durationMinutes}분 · 세션 RPE
         ${session.sessionRpe ?? "-"}</p>
     </section>
     <section class="content-section">
@@ -990,6 +1123,15 @@ function renderFinishedWorkout(session: WorkoutSession): string {
             </div>
           `;
         }).join("")}
+        ${cardio.map((item) => `
+          <div class="summary-row">
+            <div>
+              <strong>${escapeHtml(item.name)}</strong>
+              <span>유산소</span>
+            </div>
+            <span>${formatCardioSummary(item)}</span>
+          </div>
+        `).join("")}
       </div>
     </section>
     <div class="secondary-action">
@@ -1012,10 +1154,6 @@ function completedWarmupSetsForExercise(exercise: SessionExercise): WorkoutSet[]
 
 function sessionWorkingSets(session: WorkoutSession): WorkoutSet[] {
   return (session.exercises || []).flatMap(completedWorkingSetsForExercise);
-}
-
-function sessionWarmupSets(session: WorkoutSession): WorkoutSet[] {
-  return (session.exercises || []).flatMap(completedWarmupSetsForExercise);
 }
 
 function setTonnage(set: WorkoutSet): number {
@@ -1043,6 +1181,19 @@ function averageRpe(sets: WorkoutSet[]): number | null {
 function formatRpe(value: number | null): string {
   if (value === null) return "-";
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function formatCardioSummary(cardio: SessionCardio): string {
+  const duration = numberOrNull(cardio.durationMinutes);
+  const distance = numberOrNull(cardio.distanceKm);
+  const heartRate = numberOrNull(cardio.averageHeartRate);
+  const rpe = numberOrNull(cardio.rpe);
+  return [
+    duration === null ? null : `${duration}분`,
+    distance === null ? null : `${distance}km`,
+    heartRate === null ? null : `평균 ${heartRate}bpm`,
+    rpe === null ? null : `RPE ${formatRpe(rpe)}`
+  ].filter(Boolean).join(" · ") || "기록 없음";
 }
 
 function sessionDurationLabel(session: WorkoutSession): string {
@@ -1134,10 +1285,33 @@ function renderHistoryExercise(exercise: SessionExercise): string {
   `;
 }
 
+function renderHistoryCardio(cardio: SessionCardio): string {
+  if (!cardio.completed) return "";
+  return `
+    <section class="history-exercise history-cardio">
+      <header>
+        <div>
+          <span style="--muscle-color:#30b0c7"></span>
+          <div>
+            <strong>${escapeHtml(cardio.name)}</strong>
+            <small>유산소 · 목표 ${cardio.targetMinutes}분</small>
+          </div>
+        </div>
+        <span>${numberOrNull(cardio.durationMinutes) || 0}분</span>
+      </header>
+      <div class="history-cardio-detail">${formatCardioSummary(cardio)}</div>
+    </section>
+  `;
+}
+
 function renderHistory() {
   const sessions = state.sessions;
   const allWorkingSets = sessions.flatMap(sessionWorkingSets);
   const totalTonnage = setsTonnage(allWorkingSets);
+  const totalCardioMinutes = completedCardio(sessions).reduce(
+    (sum, item) => sum + (numberOrNull(item.durationMinutes) || 0),
+    0
+  );
   return `
     <header class="page-header">
       <span class="date-line">Training log</span>
@@ -1160,6 +1334,11 @@ function renderHistory() {
         <strong>${formatTonnage(totalTonnage)}</strong>
         <small>중량 × 횟수</small>
       </div>
+      <div>
+        <span>유산소</span>
+        <strong>${totalCardioMinutes}분</strong>
+        <small>완료 시간</small>
+      </div>
     </section>
     <section class="content-section">
       <div class="section-heading">
@@ -1171,9 +1350,13 @@ function renderHistory() {
       <div class="history-list">
         ${sessions.length ? sessions.map((session, sessionIndex) => {
           const workingSets = sessionWorkingSets(session);
-          const warmupSets = sessionWarmupSets(session);
           const tonnage = setsTonnage(workingSets);
           const setRpe = averageRpe(workingSets);
+          const cardio = completedCardio(session);
+          const cardioMinutes = cardio.reduce(
+            (sum, item) => sum + (numberOrNull(item.durationMinutes) || 0),
+            0
+          );
           const completedExercises = (session.exercises || []).filter((exercise) => (
             completedWorkingSetsForExercise(exercise).length
           ));
@@ -1194,7 +1377,7 @@ function renderHistory() {
                   <div class="history-metrics">
                     <span><strong>${workingSets.length}</strong><small>작업 세트</small></span>
                     <span><strong>${formatTonnage(tonnage)}</strong><small>볼륨</small></span>
-                    <span><strong>${formatRpe(setRpe)}</strong><small>평균 RPE</small></span>
+                    <span><strong>${cardioMinutes ? `${cardioMinutes}분` : formatRpe(setRpe)}</strong><small>${cardioMinutes ? "유산소" : "평균 RPE"}</small></span>
                   </div>
                   ${renderMuscleDistribution(session)}
                 </div>
@@ -1203,12 +1386,13 @@ function renderHistory() {
               <div class="history-detail">
                 <div class="history-session-stats">
                   <span><small>운동</small><strong>${completedExercises.length}개</strong></span>
-                  <span><small>웜업</small><strong>${warmupSets.length}세트</strong></span>
+                  <span><small>유산소</small><strong>${cardioMinutes ? `${cardioMinutes}분` : "-"}</strong></span>
                   <span><small>소요 시간</small><strong>${sessionDurationLabel(session)}</strong></span>
                   <span><small>세션 RPE</small><strong>${session.sessionRpe ?? "-"}</strong></span>
                 </div>
                 <div class="history-exercises">
                   ${(session.exercises || []).map(renderHistoryExercise).join("")}
+                  ${cardio.map(renderHistoryCardio).join("")}
                 </div>
                 ${session.notes ? `
                   <div class="history-note">
@@ -1304,12 +1488,16 @@ function progressSignals() {
   const stats = weeklyStats(state.sessions);
   const signals = [];
 
-  if (!stats.completed) {
+  if (!stats.completed && !stats.cardioMinutes) {
     signals.push("이번 주 수행 데이터가 없습니다. 다음 리뷰의 우선순위는 기록 누락을 줄이는 것입니다.");
-  } else if (stats.adherence >= 0.85) {
+  } else if (stats.completed && stats.adherence >= 0.85) {
     signals.push("이번 주 계획 세트의 85% 이상을 완료했습니다. 다음 조정은 주요 운동의 반복 또는 중량 추세를 봅니다.");
-  } else {
+  } else if (stats.completed) {
     signals.push("이번 주 수행률이 85%보다 낮습니다. 볼륨을 늘리기 전에 세션 길이와 일정 적합성을 점검합니다.");
+  }
+
+  if (stats.cardioMinutes) {
+    signals.push(`이번 주 유산소 ${Math.round(stats.cardioMinutes)}분을 기록했습니다. 강도는 각 활동의 RPE와 함께 해석합니다.`);
   }
 
   if (state.inBody.length >= 2) {
@@ -1409,6 +1597,7 @@ function renderProgress() {
         <div><span>완료 세트</span><strong>${stats.completed} / ${stats.targetSets}</strong></div>
         <div><span>완료 세션</span><strong>${stats.sessions}</strong></div>
         <div><span>기록 볼륨</span><strong>${Math.round(stats.tonnage).toLocaleString()}kg</strong></div>
+        <div><span>유산소</span><strong>${Math.round(stats.cardioMinutes)} / ${Math.round(stats.targetCardioMinutes)}분</strong></div>
       </div>
     </section>
     <section class="content-section">
@@ -1657,10 +1846,23 @@ function bindEvents() {
     });
   });
 
+  document.querySelectorAll<HTMLInputElement>("[data-cardio-field]").forEach((input) => {
+    input.addEventListener("input", () => {
+      const { cardio, cardioField } = input.dataset;
+      if (cardio && cardioField) updateCardio(cardio, cardioField as CardioField, input.value);
+    });
+  });
+
   document.querySelectorAll<HTMLInputElement>("[data-action='toggle-set']").forEach((button) => {
     button.addEventListener("click", () => {
       const { exercise, set } = button.dataset;
       if (exercise && set) toggleSet(exercise, set);
+    });
+  });
+
+  document.querySelectorAll<HTMLInputElement>("[data-action='toggle-cardio']").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (button.dataset.cardio) toggleCardio(button.dataset.cardio);
     });
   });
 

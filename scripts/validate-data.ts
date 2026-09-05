@@ -65,8 +65,9 @@ function validatePlan(plan: WorkoutPlan | null, gym: Gym | null): void {
   expect(/^\d{4}-\d{2}-\d{2}$/.test(plan?.date || ""), "plan: date must use YYYY-MM-DD");
   expect(typeof plan?.id === "string" && plan.id, "plan: id is required");
   expect(
-    Array.isArray(plan?.exercises) && (isRecoveryPlan || plan.exercises.length > 0),
-    "plan: exercises are required unless status is recovery"
+    Array.isArray(plan?.exercises) &&
+      (isRecoveryPlan || plan.exercises.length > 0 || (plan.cardio || []).length > 0),
+    "plan: strength exercises or cardio are required unless status is recovery"
   );
   const ids = new Set();
   const equipmentIds = new Set((gym?.equipment || []).map((item) => item.id));
@@ -112,6 +113,31 @@ function validatePlan(plan: WorkoutPlan | null, gym: Gym | null): void {
     );
     ids.add(exercise.id);
   }
+
+  for (const cardio of plan?.cardio || []) {
+    expect(typeof cardio.id === "string" && cardio.id, "plan: each cardio item needs an id");
+    expect(!ids.has(cardio.id), `plan: duplicate activity id ${cardio.id}`);
+    expect(typeof cardio.name === "string" && cardio.name, `plan: cardio ${cardio.id} needs a name`);
+    expect(
+      Number.isFinite(cardio.targetMinutes) && cardio.targetMinutes >= 1 && cardio.targetMinutes <= 600,
+      `plan: targetMinutes for ${cardio.id} must be between 1 and 600`
+    );
+    expect(
+      Array.isArray(cardio.rpeRange) &&
+        cardio.rpeRange.length === 2 &&
+        cardio.rpeRange[0] >= 1 &&
+        cardio.rpeRange[1] <= 10 &&
+        cardio.rpeRange[1] >= cardio.rpeRange[0],
+      `plan: rpeRange for ${cardio.id} is invalid`
+    );
+    expect(
+      !cardio.equipmentId ||
+        equipmentIds.has(cardio.equipmentId) ||
+        (cardio.substitutions || []).length > 0,
+      `plan: unknown equipment without substitutions for ${cardio.id}`
+    );
+    ids.add(cardio.id);
+  }
 }
 
 function validateWorkouts(): number {
@@ -135,6 +161,17 @@ function validateWorkouts(): number {
         const hasLb = set.weightLb !== undefined && set.weightLb !== null && set.weightLb !== "";
         expect(!(hasKg && hasLb), `${file}: ${set?.id || "set"} cannot define both kg and lb weights`);
       }
+    }
+    for (const cardio of workout?.cardio || []) {
+      expect(typeof cardio.id === "string" && cardio.id, `${file}: cardio id is required`);
+      const duration = cardio.durationMinutes == null || cardio.durationMinutes === "" ? null : Number(cardio.durationMinutes);
+      const distance = cardio.distanceKm == null || cardio.distanceKm === "" ? null : Number(cardio.distanceKm);
+      const heartRate = cardio.averageHeartRate == null || cardio.averageHeartRate === "" ? null : Number(cardio.averageHeartRate);
+      const rpe = cardio.rpe == null || cardio.rpe === "" ? null : Number(cardio.rpe);
+      expect(duration === null || (duration > 0 && duration <= 600), `${file}: ${cardio.id} duration is invalid`);
+      expect(distance === null || distance >= 0, `${file}: ${cardio.id} distance is invalid`);
+      expect(heartRate === null || (heartRate >= 20 && heartRate <= 250), `${file}: ${cardio.id} heart rate is invalid`);
+      expect(rpe === null || (rpe >= 1 && rpe <= 10), `${file}: ${cardio.id} RPE is invalid`);
     }
   }
 
