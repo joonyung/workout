@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -67,9 +67,36 @@ test("server restricts static files, checks origins, and rejects stale workouts"
   assert.equal((await fetch(`${server.baseUrl}api/health`)).status, 200);
   assert.equal((await fetch(`${server.baseUrl}AGENTS.md`)).status, 404);
 
+  const plan = {
+    id: "plan-watch-test",
+    date: "2026-08-12",
+    title: "Watch test",
+    exercises: [{
+      id: "press",
+      name: "Press",
+      muscleGroup: "chest",
+      targetSets: 1,
+      repRange: [8, 12],
+      targetRpe: 8,
+      restSeconds: 90,
+      startingWeightKg: 40
+    }]
+  };
+  await writeFile(
+    join(server.stateRoot, "data", "plans", "current.json"),
+    JSON.stringify(plan),
+    "utf8"
+  );
+
+  const watchWithoutSession = await fetch(`${server.baseUrl}api/watch/bootstrap`);
+  assert.equal(watchWithoutSession.status, 200);
+  assert.deepEqual((await watchWithoutSession.json()).plan, plan);
+
   const workout = {
     id: "workout-test",
     date: "2026-08-12",
+    planId: plan.id,
+    planDate: plan.date,
     updatedAt: "2026-08-12T10:00:00.000Z",
     exercises: []
   };
@@ -89,6 +116,11 @@ test("server restricts static files, checks origins, and rejects stale workouts"
     body: JSON.stringify(workout)
   });
   assert.equal(saved.status, 200);
+
+  const watchWithSession = await fetch(`${server.baseUrl}api/watch/bootstrap`);
+  const watchPayload = await watchWithSession.json();
+  assert.deepEqual(Object.keys(watchPayload).sort(), ["plan", "serverTime", "session"]);
+  assert.equal(watchPayload.session.id, workout.id);
 
   const stale = await fetch(`${server.baseUrl}api/workouts`, {
     method: "POST",

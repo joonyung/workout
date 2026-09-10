@@ -15,3 +15,7 @@ node_modules/
 *.pem
 *.key
 coverage/
+
+# Generated Apple platform build artifacts
+apple/WorkoutWatch/.build/
+apple/WorkoutWatch/WorkoutWatch.xcodeproj/

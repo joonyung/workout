@@ -11,6 +11,8 @@
     "build": "node scripts/build.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --test test/*.test.ts",
+    "watch:test": "swift test --package-path apple/WorkoutWatch",
+    "watch:project": "bash scripts/generate-watch-project.sh",
     "validate:data": "node scripts/validate-data.ts",
     "coach:context": "node scripts/coach-context.ts",
     "deploy:macmini": "bash scripts/deploy-macmini.sh"

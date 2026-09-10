@@ -26,7 +26,7 @@ import {
   projectRoot,
   stateRoot
 } from "./runtime-paths.ts";
-import type { Gym, Profile, WorkoutSession } from "../src/types.ts";
+import type { Gym, Profile, WorkoutPlan, WorkoutSession } from "../src/types.ts";
 
 interface InBodyImportPayload {
   content?: string;
@@ -173,6 +173,22 @@ async function listWorkoutRecords(): Promise<WorkoutSession[]> {
   return records.filter((record): record is WorkoutSession => Boolean(record));
 }
 
+function latestSessionForPlan(
+  plan: WorkoutPlan | null,
+  sessions: WorkoutSession[]
+): WorkoutSession | null {
+  if (!plan) return null;
+  return sessions
+    .filter((session) => (
+      session.planId === plan.id ||
+      (session.planDate === plan.date && session.date === plan.date)
+    ))
+    .sort((left, right) => (
+      Date.parse(right.updatedAt || right.startedAt || "1970-01-01") -
+      Date.parse(left.updatedAt || left.startedAt || "1970-01-01")
+    ))[0] || null;
+}
+
 function listCsvUrls(directory = inbodyRoot): string[] {
   if (!existsSync(directory)) return [];
   const urls = [];
@@ -243,6 +259,19 @@ async function handleApi(
 
   if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method || "") && !isWriteRequestAllowed(request)) {
     sendError(request, response, 403, "Request origin is not allowed.");
+    return true;
+  }
+
+  if (request.method === "GET" && pathname === "/api/watch/bootstrap") {
+    const [plan, sessions] = await Promise.all([
+      readJson<WorkoutPlan | null>(join(dataRoot, "plans", "current.json"), null),
+      listWorkoutRecords()
+    ]);
+    sendJson(request, response, 200, {
+      plan,
+      session: latestSessionForPlan(plan, sessions),
+      serverTime: new Date().toISOString()
+    });
     return true;
   }
 

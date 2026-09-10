@@ -17,6 +17,7 @@ The app uses TypeScript, plain HTML and CSS, and Node.js with no runtime package
 - InBody trend parsing and progress summaries
 - Codex-ready coaching context and deterministic data validation
 - Installable PWA with offline app-shell caching
+- Native Apple Watch companion for set entry, cardio logging, rest timers, and sync
 
 ## Quick start
 
@@ -65,6 +66,8 @@ npm run validate:data   # Validate runtime JSON files
 npm test                # Run deterministic tests
 npm run build           # Create the static dist/ output
 npm run deploy:macmini  # Deploy through the configured macmini SSH host
+npm run watch:test      # Test the shared Apple Watch data model
+npm run watch:project   # Generate the iOS/watchOS Xcode project with XcodeGen
 ```
 
 ## Production model
@@ -76,5 +79,5 @@ persistent state remain separate.
 The build bundles the browser client and compiles the production server into `dist/`.
 Production therefore needs only Node.js; TypeScript and build packages remain development-only.
 
-See [deployment instructions](docs/DEPLOYMENT.md), [coaching rules](docs/COACHING_PROTOCOL.md),
-and [agent instructions](AGENTS.md) for details.
+See [deployment instructions](docs/DEPLOYMENT.md), [Apple Watch setup](docs/APPLE_WATCH.md),
+[coaching rules](docs/COACHING_PROTOCOL.md), and [agent instructions](AGENTS.md) for details.
