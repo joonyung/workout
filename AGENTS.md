@@ -121,20 +121,28 @@ When the user asks Codex to create today's workout:
    is `unknown`, include a substitution and state the assumption.
 5. Create a dated plan in the runtime `data/plans/YYYY-MM-DD.json`.
 6. Copy the exact same plan object to the runtime `data/plans/current.json`.
-7. Run `npm run validate:data`, `npm test`, and `npm run build`.
+7. Run `npm run validate:data`. Run `npm test` and `npm run build` only when code changed.
 
-Do not silently infer injuries, available machines, schedule, or recovery. A
-missing value may be represented as an explicit assumption in a low-risk draft,
-but it must not justify aggressive loading.
+Production runtime data lives in the Mac mini checkout's `state/`. The MacBook
+`state/` is a development copy and may be stale, so read and write coaching data
+on the Mac mini.
+
+Do not invent injuries, available machines, or schedule. Judge recovery from the
+recorded readiness, notes, and missed sets instead of asking for a check-in before
+every plan; ask first only when the records show a warning sign.
 
 ## Periodic Review
 
-- Weekly review: compare the latest 7 days with the previous 3 weeks and change
-  one primary programming variable at a time.
+- Apply per-exercise load progression every session. It is routine, not a program change.
+- Keep program structure (sets, frequency, exercise selection, rotation) stable
+  for a 4-6 week block; change it at block boundaries or when a trigger in
+  `docs/COACHING_PROTOCOL.md` appears.
+- Weekly review: compare the latest 7 days with the previous 3 weeks' weekly average.
 - Monthly review: evaluate 4-6 week adherence, performance, fatigue, gym
-  constraints, and multi-measurement InBody trends.
+  constraints, and multi-measurement InBody trends, then set the next block.
 - Record durable process changes in this file or `docs/COACHING_PROTOCOL.md`.
-- Store a dated review in the runtime `data/reviews/` when a review produces a program change.
+- Store a dated review in the runtime `data/reviews/` only for structure changes
+  and weekly or monthly reviews, not for every daily plan.
 
 ## Validation Checklist
 
