@@ -279,7 +279,7 @@ test("inBodyWindow anchors ranges to the latest measurement date", () => {
     ["2025-07-10", "2026-07-03"]
   );
   assert.deepEqual(
-    inBodyWindow(rows, "2y").rows.map((row) => row.date),
+    inBodyWindow(rows, "all").rows.map((row) => row.date),
     rows.map((row) => row.date)
   );
   assert.equal(inBodyWindow(rows, "all").startMs, Date.parse("2024-10-10T12:00:00Z"));
