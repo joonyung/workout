@@ -1,32 +1,38 @@
 import {
-  bestLifts,
+  WEEKLY_SET_TARGET,
   completedCardio,
   completedSets,
   createSessionFromPlan,
+  exerciseProgressions,
+  inBodyMetricTrend,
   inBodyWindow,
+  isSettledSession,
   mergeInBodyRows,
   mergeSessions,
-  normalizeSeries,
+  muscleVolume,
   numberOrNull,
   parseInBodyCsv,
   planNeedsRefresh,
   previousSessionForPlan,
   sessionProgress,
+  rollingTrainingSummary,
+  shiftIsoDate,
   todayIso,
   uid,
-  weeklyStats,
   workoutSetWeightKg
 } from "./core.ts";
 import type {
   BootstrapPayload,
   EquipmentItem,
+  ExerciseProgression,
+  ExerciseSessionPoint,
   Gym,
   InBodyRange,
   InBodyMetricKey,
   InBodyRow,
-  InBodySeries,
   NumericInput,
   PlanExercise,
+  ProgressionStatus,
   Profile,
   Readiness,
   SessionCardio,
@@ -39,17 +45,14 @@ import type {
 
 type InBodyKey = Extract<
   InBodyMetricKey,
-  "weightKg" | "skeletalMuscleKg" | "bodyFatPercent"
+  "weightKg" | "skeletalMuscleKg" | "bodyFatKg" | "bodyFatPercent"
 >;
 type SetField = "weightKg" | "weightLb" | "reps" | "rpe";
 type CardioField = "durationMinutes" | "distanceKm" | "averageHeartRate" | "rpe";
-type RangeWindow = ReturnType<typeof inBodyWindow>;
 
 const QA_MODE = new URLSearchParams(window.location.search).get("qa") === "1";
 const STORAGE_KEY = QA_MODE ? "workout-os-state-v2-qa" : "workout-os-state-v2";
 const LEGACY_STORAGE_KEY = "workout-os-state-v1";
-const PROGRESS_CHART_HEIGHT = 270;
-const PROGRESS_CHART_PADDING = { top: 16, right: 8, bottom: 28, left: 38 };
 
 const fallbackProfile: Profile = {
   schemaVersion: 1,
@@ -85,8 +88,6 @@ interface AppState {
   sessions: WorkoutSession[];
   inBody: InBodyRow[];
   inBodyRange: InBodyRange;
-  activeInBodySeries: InBodySeries | null;
-  chartSelectedDate: string | null;
   preReadiness: Readiness;
   finishSheetOpen: boolean;
   timer: {
@@ -111,8 +112,6 @@ let state: AppState = {
   sessions: [],
   inBody: [],
   inBodyRange: "1y",
-  activeInBodySeries: null,
-  chartSelectedDate: null,
   preReadiness: "normal",
   finishSheetOpen: false,
   timer: {
@@ -153,11 +152,8 @@ function loadLocalState() {
         !completedSets(session).length &&
         !completedCardio(session).length
       ));
-      if (!["1y", "2y", "all"].includes(state.inBodyRange)) {
+      if (!["6m", "1y", "all"].includes(state.inBodyRange)) {
         state.inBodyRange = "1y";
-      }
-      if (![null, "weight", "muscle", "fat"].includes(state.activeInBodySeries)) {
-        state.activeInBodySeries = null;
       }
       return;
     } catch {
@@ -202,7 +198,6 @@ function saveLocalState() {
     sessions: state.sessions,
     inBody: state.inBody,
     inBodyRange: state.inBodyRange,
-    activeInBodySeries: state.activeInBodySeries,
     preReadiness: state.preReadiness,
     timer: state.timer
   }));
@@ -627,26 +622,6 @@ function formatDateKorean(dateString: string): string {
 function formatShortDate(dateString?: string): string {
   if (!dateString) return "-";
   return dateString.replaceAll("-", ".");
-}
-
-function formatChartMonth(timestamp: number): string {
-  if (!Number.isFinite(timestamp)) return "-";
-  const date = new Date(timestamp);
-  return (
-    date.getUTCFullYear() + "." +
-    String(date.getUTCMonth() + 1).padStart(2, "0")
-  );
-}
-
-function formatNumber(value: unknown, digits = 1, suffix = ""): string {
-  if (value === null || value === undefined || Number.isNaN(value)) return "-";
-  return `${Number(value).toFixed(digits)}${suffix}`;
-}
-
-function formatDelta(value: number | null, suffix = ""): string {
-  if (value === null || value === undefined || Number.isNaN(value)) return "이전 측정 없음";
-  const sign = value > 0 ? "+" : "";
-  return `${sign}${value.toFixed(1)}${suffix}`;
 }
 
 function planSetCount(plan: WorkoutPlan | null = state.plan): number {
@@ -1411,214 +1386,472 @@ function renderHistory() {
   `;
 }
 
-function inBodyDelta(key: InBodyKey): number | null {
-  const latest = state.inBody.at(-1);
-  const previous = state.inBody.at(-2);
-  const latestValue = latest?.[key];
-  const previousValue = previous?.[key];
-  if (typeof latestValue !== "number" || typeof previousValue !== "number") return null;
-  return latestValue - previousValue;
-}
+// ---------------------------------------------------------------------------
+// Progress view. Three decisions, in the order they recur:
+//   1. Is this week's training on track? (rolling 7 days vs prior 3 weeks)
+//   2. Is each exercise progressing? (protocol-based status per exercise id)
+//   3. Is body composition moving? (several InBody measurements, real units)
+// Charts are inline SVG + HTML so they follow the CSS color tokens in both
+// light and dark mode and need no redraw on resize or theme change.
+// ---------------------------------------------------------------------------
 
-interface InBodySeriesSetting {
-  id: InBodySeries;
+interface BodyMetricSetting {
   key: InBodyKey;
   label: string;
-  suffix: string;
-  color: string;
+  unit: string;
+  /** Smallest y-axis span, roughly measurement noise, so noise reads as flat. */
+  minSpan: number;
 }
 
-function inBodySeriesSettings(dark = false): InBodySeriesSetting[] {
-  return [
-    {
-      id: "weight",
-      key: "weightKg",
-      label: "체중",
-      suffix: "kg",
-      color: dark ? "#2997ff" : "#0071e3"
-    },
-    {
-      id: "muscle",
-      key: "skeletalMuscleKg",
-      label: "골격근량",
-      suffix: "kg",
-      color: dark ? "#30d158" : "#248a3d"
-    },
-    {
-      id: "fat",
-      key: "bodyFatPercent",
-      label: "체지방률",
-      suffix: "%",
-      color: dark ? "#ff9f0a" : "#c93400"
-    }
-  ];
+const BODY_METRICS: BodyMetricSetting[] = [
+  { key: "weightKg", label: "체중", unit: "kg", minSpan: 2 },
+  { key: "skeletalMuscleKg", label: "골격근량", unit: "kg", minSpan: 1 },
+  { key: "bodyFatKg", label: "체지방량", unit: "kg", minSpan: 1.5 },
+  { key: "bodyFatPercent", label: "체지방률", unit: "%", minSpan: 2 }
+];
+
+const STATUS_LABELS: Record<ProgressionStatus, string> = {
+  "load-up": "증량",
+  "reps-up": "반복 증가",
+  "reps-down": "반복 감소",
+  holding: "유지",
+  stalled: "정체",
+  "load-down": "감량",
+  baseline: "기준선"
+};
+
+const INBODY_GAP_DAYS = 120;
+
+function trimNumber(value: number, digits = 2): string {
+  return String(Number(value.toFixed(digits)));
 }
 
-function formatNormalizedDelta(value: number | undefined): string {
-  if (typeof value !== "number" || !Number.isFinite(value)) return "-";
-  const delta = value - 100;
-  const sign = delta > 0 ? "+" : "";
-  return sign + delta.toFixed(1) + "%";
+function formatSigned(value: number | null, digits = 1, suffix = ""): string {
+  if (value === null || !Number.isFinite(value)) return "-";
+  const rounded = Number(value.toFixed(digits));
+  if (rounded === 0) return `±0${suffix}`;
+  return `${rounded > 0 ? "+" : "−"}${Math.abs(rounded).toFixed(digits)}${suffix}`;
 }
 
-function selectedInBodyMeasurement(rangeWindow: RangeWindow): InBodyRow | null {
-  return (
-    rangeWindow.rows.find((row) => row.date === state.chartSelectedDate) ||
-    rangeWindow.rows.at(-1) ||
-    null
-  );
+function formatAverage(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "-";
+  return trimNumber(value, 1);
 }
 
-function chartDetailHtml(row: InBodyRow | null): string {
-  if (!row) return `<div class="empty-inline">표시할 측정이 없습니다.</div>`;
+/** "11.25" within the reference year, "25.07.10" otherwise. */
+function formatCompactDate(date: string, referenceYear = todayIso().slice(0, 4)): string {
+  if (!date) return "-";
+  const [year, month, day] = date.split("-");
+  return year === referenceYear ? `${month}.${day}` : `${year.slice(2)}.${month}.${day}`;
+}
+
+function daysBetween(start: string, end: string): number {
+  return Math.round((Date.parse(`${end}T12:00:00Z`) - Date.parse(`${start}T12:00:00Z`)) / 86_400_000);
+}
+
+function formatSpan(days: number): string {
+  if (days >= 14) return `${Math.round(days / 7)}주`;
+  return `${days}일`;
+}
+
+function formatLiftSets(point: ExerciseSessionPoint, unit: WeightUnit): string {
+  const load = point.topLoad === null ? "맨몸" : `${trimNumber(point.topLoad)}${unit}`;
+  const lighter = point.lighterSets ? ` 외 ${point.lighterSets}세트` : "";
+  return `${load} × ${point.topReps.join("/")}${lighter}`;
+}
+
+interface SparkValue {
+  date: string;
+  value: number;
+}
+
+/**
+ * Sparkline: SVG strokes stretch with the box (non-scaling stroke) while
+ * dots are HTML so they stay round at any width.
+ */
+function renderSpark(
+  values: SparkValue[],
+  { minSpan, label, gapDays = Infinity, className = "", scaleDigits = null }: {
+    minSpan: number;
+    label: string;
+    gapDays?: number;
+    className?: string;
+    /** When set, the y-domain endpoints are labelled with this many decimals. */
+    scaleDigits?: number | null;
+  }
+): string {
+  if (!values.length) return "";
+  const times = values.map((item) => Date.parse(`${item.date}T12:00:00Z`));
+  const tMin = Math.min(...times);
+  const tSpan = Math.max(...times) - tMin;
+  const vMin = Math.min(...values.map((item) => item.value));
+  const vMax = Math.max(...values.map((item) => item.value));
+  const span = Math.max(vMax - vMin, minSpan);
+  const low = (vMin + vMax) / 2 - span / 2;
+  const coordinates = values.map((item, index) => ({
+    x: tSpan ? ((times[index] - tMin) / tSpan) * 100 : 50,
+    y: 100 - ((item.value - low) / span) * 100
+  }));
+  let solid = "";
+  let gaps = "";
+  coordinates.forEach((point, index) => {
+    if (!index) return;
+    const previous = coordinates[index - 1];
+    const segment = `M${previous.x.toFixed(2)} ${previous.y.toFixed(2)}L${point.x.toFixed(2)} ${point.y.toFixed(2)}`;
+    if (daysBetween(values[index - 1].date, values[index].date) > gapDays) gaps += segment;
+    else solid += segment;
+  });
+
   return `
-    <div class="chart-detail-heading">
-      <strong>${formatShortDate(row.date)}</strong>
-      <span>실측값</span>
-    </div>
-    <div class="chart-detail-values">
-      <div><span>체중</span><strong>${formatNumber(row.weightKg, 1, "kg")}</strong></div>
-      <div><span>골격근량</span><strong>${formatNumber(row.skeletalMuscleKg, 1, "kg")}</strong></div>
-      <div><span>체지방률</span><strong>${formatNumber(row.bodyFatPercent, 1, "%")}</strong></div>
+    <div class="spark ${className}" role="img" aria-label="${escapeHtml(label)}">
+      <div class="spark-plot">
+        <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+          ${solid ? `<path class="spark-line" d="${solid}" />` : ""}
+          ${gaps ? `<path class="spark-gap" d="${gaps}" />` : ""}
+        </svg>
+        ${coordinates.map((point, index) => `
+          <i class="${index === coordinates.length - 1 ? "latest" : ""}"
+            style="left:${point.x.toFixed(2)}%;top:${point.y.toFixed(2)}%"></i>
+        `).join("")}
+        ${scaleDigits === null ? "" : `
+          <span class="spark-scale" style="top:0" aria-hidden="true">${(low + span).toFixed(scaleDigits)}</span>
+          <span class="spark-scale" style="top:100%" aria-hidden="true">${low.toFixed(scaleDigits)}</span>
+        `}
+      </div>
     </div>
   `;
 }
 
-function progressSignals() {
-  const stats = weeklyStats(state.sessions);
-  const signals = [];
+function renderWeekStrip(today: string): string {
+  const { endDate, recent, priorWeeklyAverage: prior } = rollingTrainingSummary(state.sessions, today);
+  const hasHistory = state.sessions.some((session) => (
+    isSettledSession(session, today) && (completedSets(session).length || completedCardio(session).length)
+  ));
+  const cells: Array<[string, string, string]> = [
+    ["세션", `${recent.sessions}`, prior ? `평균 ${formatAverage(prior.sessions)}` : ""],
+    ["작업 세트", `${recent.workingSets}`, prior ? `평균 ${formatAverage(prior.workingSets)}` : ""],
+    [
+      "수행률",
+      recent.adherence === null ? "-" : `${Math.round(recent.adherence * 100)}%`,
+      prior?.adherence === null || !prior ? "" : `이전 ${Math.round(prior.adherence * 100)}%`
+    ],
+    ["유산소", `${Math.round(recent.cardioMinutes)}분`, prior ? `평균 ${Math.round(prior.cardioMinutes)}분` : ""]
+  ];
 
-  if (!stats.completed && !stats.cardioMinutes) {
-    signals.push("이번 주 수행 데이터가 없습니다. 다음 리뷰의 우선순위는 기록 누락을 줄이는 것입니다.");
-  } else if (stats.completed && stats.adherence >= 0.85) {
-    signals.push("이번 주 계획 세트의 85% 이상을 완료했습니다. 다음 조정은 주요 운동의 반복 또는 중량 추세를 봅니다.");
-  } else if (stats.completed) {
-    signals.push("이번 주 수행률이 85%보다 낮습니다. 볼륨을 늘리기 전에 세션 길이와 일정 적합성을 점검합니다.");
+  if (!hasHistory) {
+    return `
+      <section class="content-section" aria-labelledby="week-heading">
+        <div class="section-heading">
+          <div>
+            <span class="section-kicker">최근 7일</span>
+            <h2 id="week-heading">훈련량</h2>
+          </div>
+        </div>
+        <div class="empty-inline keep-words">운동을 완료하면 최근 7일 세트 수와 부위별 볼륨이 표시됩니다.</div>
+      </section>
+    `;
   }
 
-  if (stats.cardioMinutes) {
-    signals.push(`이번 주 유산소 ${Math.round(stats.cardioMinutes)}분을 기록했습니다. 강도는 각 활동의 RPE와 함께 해석합니다.`);
-  }
+  return `
+    <section class="content-section week-section" aria-labelledby="week-heading">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">최근 7일</span>
+          <h2 id="week-heading">훈련량</h2>
+        </div>
+        <span class="status-text">${formatCompactDate(shiftIsoDate(endDate, -6))}–${formatCompactDate(endDate)}</span>
+      </div>
+      <div class="week-strip">
+        ${cells.map(([label, value, comparison]) => `
+          <div>
+            <span>${label}</span>
+            <strong>${value}</strong>
+            ${comparison ? `<small>${comparison}</small>` : ""}
+          </div>
+        `).join("")}
+      </div>
+      <p class="section-note">${prior
+        ? "평균·이전은 그 전 3주의 주당 값입니다."
+        : "이전 기록이 1주 이상 쌓이면 주당 평균과 비교합니다."}</p>
+      ${renderMuscleVolume(today)}
+    </section>
+  `;
+}
 
-  if (state.inBody.length >= 2) {
-    signals.push("InBody는 최근 두 측정의 차이보다 3회 이상 누적 방향을 우선해 해석합니다.");
-  }
+function renderMuscleVolume(today: string): string {
+  const rows = muscleVolume(state.sessions, today);
+  const [targetLow, targetHigh] = WEEKLY_SET_TARGET;
+  const scaleMax = Math.max(
+    targetHigh + 4,
+    ...rows.map((row) => Math.max(row.recentSets, row.priorWeeklyAverage || 0) + 1)
+  );
+  const percent = (value: number) => `${((value / scaleMax) * 100).toFixed(2)}%`;
+  const hasPrior = rows.some((row) => row.priorWeeklyAverage !== null);
 
-  return signals;
+  return `
+    <div class="volume-block" role="group" aria-labelledby="volume-heading">
+      <div class="subsection-heading">
+        <h3 id="volume-heading">부위별 작업 세트</h3>
+        <span>목표 ${targetLow}–${targetHigh}세트</span>
+      </div>
+      ${rows.length ? `
+        <div class="volume-legend" aria-hidden="true">
+          <span><i class="key-bar"></i>최근 7일</span>
+          ${hasPrior ? `<span><i class="key-avg"></i>이전 3주 평균</span>` : ""}
+          <span><i class="key-band"></i>목표 범위</span>
+        </div>
+        <ul class="volume-list">
+          ${rows.map((row) => `
+            <li class="volume-row">
+              <span class="volume-name">${escapeHtml(row.muscleGroup)}</span>
+              <span class="volume-track" aria-hidden="true">
+                <span class="volume-band" style="left:${percent(targetLow)};width:${percent(targetHigh - targetLow)}"></span>
+                <span class="volume-bar" style="width:${percent(row.recentSets)}"></span>
+                ${row.priorWeeklyAverage !== null ? `
+                  <span class="volume-avg" style="left:${percent(row.priorWeeklyAverage)}"></span>
+                ` : ""}
+              </span>
+              <span class="volume-value">
+                <strong>${row.recentSets}</strong>
+                <small>${row.priorWeeklyAverage === null ? "" : row.priorWeeklyAverage.toFixed(1)}</small>
+              </span>
+              <span class="sr-only">
+                최근 7일 ${row.recentSets}세트${row.priorWeeklyAverage === null ? "" : `, 이전 3주 주당 평균 ${formatAverage(row.priorWeeklyAverage)}세트`}
+              </span>
+            </li>
+          `).join("")}
+        </ul>
+        <p class="section-note">워밍업을 뺀 직접 세트입니다. 복합 운동은 기록된 주 부위 하나로 셉니다.</p>
+      ` : `
+        <div class="empty-inline keep-words">최근 4주에 완료한 작업 세트가 없습니다.</div>
+      `}
+    </div>
+  `;
+}
+
+function liftComparisonText(item: ExerciseProgression): string {
+  if (!item.previous) return "첫 기록 · 다음 수행부터 비교";
+  if (item.status === "stalled" || (item.status !== "reps-down" && item.holdStreak >= 2)) {
+    return `같은 중량에서 ${item.holdStreak}회 연속 반복 그대로`;
+  }
+  return `이전 ${formatLiftSets(item.previous, item.unit)}`;
+}
+
+function renderLiftRow(item: ExerciseProgression): string {
+  const first = item.points[0];
+  const spanDays = daysBetween(first.date, item.latest.date);
+  const e1rmValues = item.points
+    .filter((point) => point.bestE1rmKg !== null)
+    .map((point) => ({ date: point.date, value: point.bestE1rmKg! }));
+  const maxE1rm = Math.max(0, ...e1rmValues.map((point) => point.value));
+  const change = item.e1rmChange === null
+    ? ""
+    : `${formatSigned(item.e1rmChange * 100, 1, "%")} · ${formatSpan(spanDays)}`;
+  const statusLabel = STATUS_LABELS[item.status];
+
+  return `
+    <li class="lift-row">
+      <div class="lift-main">
+        <strong class="lift-name">${escapeHtml(item.name)}</strong>
+        <span class="lift-latest">${formatLiftSets(item.latest, item.unit)}</span>
+        <span class="lift-compare">${escapeHtml(liftComparisonText(item))}</span>
+      </div>
+      <div class="lift-trend">
+        <span class="lift-status" data-status="${item.status}">${statusLabel}</span>
+        ${e1rmValues.length > 1 ? renderSpark(e1rmValues, {
+          minSpan: maxE1rm * 0.06,
+          className: "lift-spark",
+          label: `추정 1RM ${e1rmValues.length}회 기록, ${change}`
+        }) : `<span class="lift-spark-empty" aria-hidden="true"></span>`}
+        ${change ? `<span class="lift-change">${change}</span>` : ""}
+      </div>
+    </li>
+  `;
+}
+
+function renderLiftProgress(today: string): string {
+  const progressions = exerciseProgressions(state.sessions, today);
+  const counts = progressions.reduce<Record<string, number>>((result, item) => {
+    const group = item.status === "load-up" || item.status === "reps-up"
+      ? "up"
+      : item.status === "load-down" || item.status === "reps-down" ? "down" : item.status;
+    result[group] = (result[group] || 0) + 1;
+    return result;
+  }, {});
+  const groups: Array<{ sessionId: string; date: string; title: string; items: ExerciseProgression[] }> = [];
+  for (const item of progressions) {
+    let group = groups.find((entry) => entry.sessionId === item.latest.sessionId);
+    if (!group) {
+      const session = state.sessions.find((entry) => entry.id === item.latest.sessionId);
+      group = {
+        sessionId: item.latest.sessionId,
+        date: item.latest.date,
+        title: session?.title || "",
+        items: []
+      };
+      groups.push(group);
+    }
+    group.items.push(item);
+  }
+  const summary: Array<[string, string, number]> = [
+    ["up", "진행", counts.up || 0],
+    ["holding", "유지", counts.holding || 0],
+    ["down", "감소", counts.down || 0],
+    ["stalled", "정체", counts.stalled || 0],
+    ["baseline", "기준선", counts.baseline || 0]
+  ];
+
+  return `
+    <section class="content-section" aria-labelledby="lift-heading">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">최근 4주 수행 종목</span>
+          <h2 id="lift-heading">종목별 진행</h2>
+        </div>
+      </div>
+      ${progressions.length ? `
+        <div class="lift-summary">
+          ${summary.filter(([, , count]) => count).map(([status, label, count]) => `
+            <span data-status="${status}"><strong>${count}</strong>${label}</span>
+          `).join("")}
+        </div>
+        ${groups.map((group) => `
+          <div class="lift-group">
+            <h3 class="lift-group-heading">
+              <span>${formatCompactDate(group.date)}</span>
+              <span>${escapeHtml(group.title)}</span>
+            </h3>
+            <ul class="lift-list">${group.items.map(renderLiftRow).join("")}</ul>
+          </div>
+        `).join("")}
+        <p class="section-note">
+          상태는 직전 수행과 비교합니다. 같은 중량에서 반복이 3회 연속 늘지 않으면 정체입니다.
+          그래프와 변화율은 최근 6주 추정 1RM이며, lb 기구도 kg으로 환산해 비교합니다.
+        </p>
+      ` : `
+        <div class="empty-inline keep-words">최근 4주에 완료한 작업 세트가 없습니다. 운동을 완료하면 종목별 증량과 반복 변화가 표시됩니다.</div>
+      `}
+    </section>
+  `;
+}
+
+function renderBodyRow(setting: BodyMetricSetting, rows: InBodyRow[]): string {
+  const trend = inBodyMetricTrend(rows, setting.key);
+  if (!trend.latest) return "";
+  const values = rows
+    .map((row) => ({ date: row.date, value: numberOrNull(row[setting.key]) }))
+    .filter((row): row is SparkValue => row.value !== null);
+  const runText = trend.runDirection
+    ? `최근 ${trend.runLength}회 연속 ${trend.runDirection === "up" ? "증가" : "감소"}`
+    : "";
+
+  return `
+    <li class="body-row">
+      <div class="body-meta">
+        <span class="body-label">${setting.label}</span>
+        <strong>${trend.latest.value.toFixed(1)}<small>${setting.unit}</small></strong>
+        <span class="body-delta">직전 ${formatSigned(trend.previousDelta)}</span>
+        ${trend.first && trend.count > 2 ? `
+          <span class="body-delta">${formatCompactDate(trend.first.date)} 대비 ${formatSigned(trend.rangeDelta)}</span>
+        ` : ""}
+        ${runText ? `<span class="body-run">${runText}</span>` : ""}
+      </div>
+      ${values.length > 1 ? renderSpark(values, {
+        minSpan: setting.minSpan,
+        gapDays: INBODY_GAP_DAYS,
+        className: "body-spark",
+        scaleDigits: 1,
+        label: `${setting.label} ${values.length}회 측정, ${formatCompactDate(values[0].date)} ${values[0].value.toFixed(1)}${setting.unit}에서 ${formatCompactDate(trend.latest.date)} ${trend.latest.value.toFixed(1)}${setting.unit}`
+      }) : `<div class="body-spark empty">추세는 2회 측정부터</div>`}
+    </li>
+  `;
+}
+
+function renderBodyComposition(): string {
+  const rangeWindow = inBodyWindow(state.inBody, state.inBodyRange);
+  const rows = rangeWindow.rows;
+  const latest = rows.at(-1);
+  const first = rows[0];
+  const ranges: Array<[InBodyRange, string]> = [["6m", "6개월"], ["1y", "1년"], ["all", "전체"]];
+  const hasGap = rows.some((row, index) => (
+    index > 0 && daysBetween(rows[index - 1].date, row.date) > INBODY_GAP_DAYS
+  ));
+
+  return `
+    <section class="content-section" aria-labelledby="body-heading">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">InBody</span>
+          <h2 id="body-heading">체성분</h2>
+        </div>
+        ${latest ? `<span class="status-text">${rows.length}회 측정</span>` : ""}
+      </div>
+      ${state.inBody.length ? `
+        <div class="range-selector" role="group" aria-label="InBody 기간">
+          ${ranges.map(([value, label]) => `
+            <button type="button" data-inbody-range="${value}"
+              class="${state.inBodyRange === value ? "selected" : ""}"
+              aria-pressed="${state.inBodyRange === value}">${label}</button>
+          `).join("")}
+        </div>
+        <ul class="body-list">
+          ${BODY_METRICS.map((setting) => renderBodyRow(setting, rows)).join("")}
+        </ul>
+        ${rows.length > 1 && first && latest ? `
+          <div class="body-axis" aria-hidden="true">
+            <span>${formatCompactDate(first.date)}</span>
+            ${hasGap ? `<span class="body-axis-gap">점선: ${INBODY_GAP_DAYS}일 넘는 측정 공백</span>` : ""}
+            <span>${formatCompactDate(latest.date)}</span>
+          </div>
+        ` : ""}
+        <p class="section-note">
+          측정 시각, 식사, 운동 전후에 따라 수치가 흔들립니다.
+          한 번의 차이보다 같은 조건에서 3회 이상 같은 방향인지 봅니다.
+        </p>
+        <details class="body-table">
+          <summary>측정값 ${rows.length}회</summary>
+          <table>
+            <thead>
+              <tr><th scope="col">날짜</th>${BODY_METRICS.map((setting) => `
+                <th scope="col">${setting.label}<small>${setting.unit}</small></th>
+              `).join("")}</tr>
+            </thead>
+            <tbody>
+              ${[...rows].reverse().map((row) => `
+                <tr>
+                  <th scope="row">${formatShortDate(row.date)}</th>
+                  ${BODY_METRICS.map((setting) => {
+                    const value = numberOrNull(row[setting.key]);
+                    return `<td>${value === null ? "-" : value.toFixed(1)}</td>`;
+                  }).join("")}
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </details>
+      ` : `
+        <div class="empty-inline keep-words">InBody 측정이 없습니다. 설정에서 CSV를 가져오면 추세가 표시됩니다.</div>
+      `}
+    </section>
+  `;
 }
 
 function renderProgress() {
-  const latest = state.inBody.at(-1);
-  const rangeWindow = inBodyWindow(state.inBody, state.inBodyRange);
-  const selectedMeasurement = selectedInBodyMeasurement(rangeWindow);
-  const normalizedMetrics = inBodySeriesSettings().map((item) => {
-    const points = normalizeSeries(rangeWindow.rows, item.key);
-    return { ...item, change: points.at(-1)?.normalizedValue };
-  });
-  const stats = weeklyStats(state.sessions);
-  const best = bestLifts(state.sessions).slice(0, 4);
-  const metrics: Array<[InBodyKey, string, number | null | undefined, string]> = [
-    ["weightKg", "체중", latest?.weightKg, "kg"],
-    ["skeletalMuscleKg", "골격근량", latest?.skeletalMuscleKg, "kg"],
-    ["bodyFatPercent", "체지방률", latest?.bodyFatPercent, "%"]
-  ];
+  const today = todayIso();
+  const inProgress = state.sessions.some((session) => (
+    session.date === today && !isSettledSession(session, today)
+  ));
 
   return `
     <header class="page-header">
       <span class="date-line">Progress</span>
       <h1>변화</h1>
-      <p>운동 수행과 체성분의 장기 추세를 함께 봅니다.</p>
+      <p>증량, 부위별 세트, 체성분이 실제로 움직이는지 봅니다.</p>
+      ${inProgress ? `<p class="page-header-note">오늘 진행 중인 운동은 완료하면 반영됩니다.</p>` : ""}
     </header>
-    <section class="metric-strip">
-      ${metrics.map(([key, label, value, suffix]) => `
-        <div>
-          <span>${label}</span>
-          <strong>${formatNumber(value, 1, suffix)}</strong>
-          <small>${formatDelta(inBodyDelta(key), suffix)}</small>
-        </div>
-      `).join("")}
-    </section>
-    <section class="content-section chart-section">
-      <div class="section-heading">
-        <div>
-          <span class="section-kicker">InBody</span>
-          <h2>${formatShortDate(latest?.date)} 측정</h2>
-        </div>
-        <span class="status-text">${rangeWindow.rows.length}/${state.inBody.length}회</span>
-      </div>
-      <div class="range-selector" role="group" aria-label="인바디 날짜 범위">
-        ${[
-          ["1y", "1년"],
-          ["2y", "2년"],
-          ["all", "전체"]
-        ].map(([value, label]) => `
-          <button data-inbody-range="${value}"
-            class="${state.inBodyRange === value ? "selected" : ""}"
-            aria-pressed="${state.inBodyRange === value}">${label}</button>
-        `).join("")}
-      </div>
-      <div class="chart-scale-note">
-        <span>선택 기간 첫 측정 = 100</span>
-        <span>기간 변화</span>
-      </div>
-      <div class="normalized-legend">
-        ${normalizedMetrics.map((item) => `
-          <button type="button"
-            class="legend-item ${state.activeInBodySeries === item.id ? "selected" : ""} ${state.activeInBodySeries && state.activeInBodySeries !== item.id ? "muted" : ""}"
-            data-series="${item.id}"
-            data-inbody-series="${item.id}"
-            aria-pressed="${state.activeInBodySeries === item.id}"
-            aria-label="${item.label}만 차트에 표시, 기간 변화 ${formatNormalizedDelta(item.change)}"
-            title="${state.activeInBodySeries === item.id ? "다시 누르면 전체 시리즈 표시" : `${item.label}만 표시`}">
-            <span class="legend-dot" aria-hidden="true"></span>
-            <span>${item.label}</span>
-            <strong>${formatNormalizedDelta(item.change)}</strong>
-          </button>
-        `).join("")}
-      </div>
-      <div class="chart-wrap">
-        <canvas id="progress-chart"
-          tabindex="0"
-          aria-label="선택 기간의 첫 측정을 100으로 정규화한 체중, 골격근량, 체지방률 추세. 좌우 화살표로 측정일을 선택할 수 있습니다."></canvas>
-      </div>
-      <div id="chart-detail" class="chart-detail">
-        ${chartDetailHtml(selectedMeasurement)}
-      </div>
-    </section>
-    <section class="content-section">
-      <div class="section-heading">
-        <div>
-          <span class="section-kicker">이번 주</span>
-          <h2>수행 지표</h2>
-        </div>
-        <span class="status-text">${Math.round(stats.adherence * 100)}%</span>
-      </div>
-      <div class="stat-list">
-        <div><span>완료 세트</span><strong>${stats.completed} / ${stats.targetSets}</strong></div>
-        <div><span>완료 세션</span><strong>${stats.sessions}</strong></div>
-        <div><span>기록 볼륨</span><strong>${Math.round(stats.tonnage).toLocaleString()}kg</strong></div>
-        <div><span>유산소</span><strong>${Math.round(stats.cardioMinutes)} / ${Math.round(stats.targetCardioMinutes)}분</strong></div>
-      </div>
-    </section>
-    <section class="content-section">
-      <div class="section-heading">
-        <div>
-          <span class="section-kicker">주요 기록</span>
-          <h2>추정 1RM</h2>
-        </div>
-      </div>
-      <div class="summary-list">
-        ${best.length ? best.map((item) => `
-          <div class="summary-row">
-            <div><strong>${escapeHtml(item.exerciseName)}</strong><span>${formatShortDate(item.date)}</span></div>
-            <span>${formatNumber(item.e1rm, 1, "kg")}</span>
-          </div>
-        `).join("") : `<div class="empty-inline">중량과 반복 기록이 쌓이면 표시됩니다.</div>`}
-      </div>
-    </section>
-    <section class="signal-list">
-      ${progressSignals().map((signal) => `<p>${escapeHtml(signal)}</p>`).join("")}
-    </section>
+    ${renderWeekStrip(today)}
+    ${renderLiftProgress(today)}
+    ${renderBodyComposition()}
   `;
 }
 
@@ -1808,7 +2041,6 @@ function render() {
 
   bindEvents();
   renderTimerBar();
-  if (state.activeTab === "progress") drawProgressChart();
 }
 
 function bindEvents() {
@@ -1892,25 +2124,10 @@ function bindEvents() {
       const range = button.dataset.inbodyRange as InBodyRange | undefined;
       if (!range) return;
       state.inBodyRange = range;
-      state.chartSelectedDate = null;
       saveLocalState();
       render();
     });
   });
-
-  document.querySelectorAll<HTMLInputElement>("[data-inbody-series]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const seriesId = button.dataset.inbodySeries as InBodySeries | undefined;
-      if (!seriesId) return;
-      state.activeInBodySeries = state.activeInBodySeries === seriesId ? null : seriesId;
-      saveLocalState();
-      render();
-    });
-  });
-
-  const progressChart = document.querySelector<HTMLCanvasElement>("#progress-chart");
-  progressChart?.addEventListener("click", (event) => selectChartDate(event));
-  progressChart?.addEventListener("keydown", (event) => moveChartSelection(event));
 
   document.querySelector<HTMLFormElement>("#profile-form")?.addEventListener("submit", saveProfile);
   document.querySelector<HTMLFormElement>("#gym-form")?.addEventListener("submit", saveGym);
@@ -2107,221 +2324,6 @@ function exportData() {
   URL.revokeObjectURL(url);
 }
 
-function setChartSelection(date: string | null): void {
-  const rangeWindow = inBodyWindow(state.inBody, state.inBodyRange);
-  const row = rangeWindow.rows.find((item) => item.date === date);
-  if (!row) return;
-  state.chartSelectedDate = row.date;
-  const detail = document.querySelector<HTMLInputElement>("#chart-detail");
-  if (detail) detail.innerHTML = chartDetailHtml(row);
-  drawProgressChart();
-}
-
-function selectChartDate(event: MouseEvent): void {
-  const rangeWindow = inBodyWindow(state.inBody, state.inBodyRange);
-  const { startMs, endMs } = rangeWindow;
-  if (!rangeWindow.rows.length || startMs === null || endMs === null) return;
-  const rect = (event.currentTarget as HTMLCanvasElement).getBoundingClientRect();
-  const plotWidth = rect.width -
-    PROGRESS_CHART_PADDING.left -
-    PROGRESS_CHART_PADDING.right;
-  const x = Math.min(
-    plotWidth,
-    Math.max(0, event.clientX - rect.left - PROGRESS_CHART_PADDING.left)
-  );
-  const ratio = plotWidth ? x / plotWidth : 1;
-  const targetMs = startMs + (endMs - startMs) * ratio;
-  const nearest = rangeWindow.rows.reduce<{ row: InBodyRow; distance: number } | null>((best, row) => {
-    const distance = Math.abs(
-      Date.parse(row.date + "T12:00:00Z") - targetMs
-    );
-    return !best || distance < best.distance ? { row, distance } : best;
-  }, null);
-  if (nearest) setChartSelection(nearest.row.date);
-}
-
-function moveChartSelection(event: KeyboardEvent): void {
-  if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
-  event.preventDefault();
-  const rangeWindow = inBodyWindow(state.inBody, state.inBodyRange);
-  if (!rangeWindow.rows.length) return;
-  const current = selectedInBodyMeasurement(rangeWindow);
-  const currentIndex = Math.max(
-    0,
-    rangeWindow.rows.findIndex((row) => row.date === current?.date)
-  );
-  const direction = event.key === "ArrowLeft" ? -1 : 1;
-  const nextIndex = Math.min(
-    rangeWindow.rows.length - 1,
-    Math.max(0, currentIndex + direction)
-  );
-  setChartSelection(rangeWindow.rows[nextIndex].date);
-}
-
-function drawProgressChart() {
-  const canvas = document.querySelector<HTMLCanvasElement>("#progress-chart");
-  if (!canvas || !state.inBody.length) return;
-
-  const rangeWindow = inBodyWindow(state.inBody, state.inBodyRange);
-  const { startMs, endMs } = rangeWindow;
-  if (!rangeWindow.rows.length || startMs === null || endMs === null) return;
-
-  const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-  const configuredSeries = inBodySeriesSettings(dark).filter((item) => (
-    !state.activeInBodySeries || item.id === state.activeInBodySeries
-  ));
-  const series = configuredSeries.map((item) => ({
-    ...item,
-    points: normalizeSeries(rangeWindow.rows, item.key)
-  })).filter((item) => item.points.length);
-  if (!series.length) return;
-
-  const rect = canvas.getBoundingClientRect();
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const width = Math.max(280, rect.width);
-  const height = PROGRESS_CHART_HEIGHT;
-  canvas.width = width * dpr;
-  canvas.height = height * dpr;
-  const context = canvas.getContext("2d");
-  if (!context) return;
-  context.scale(dpr, dpr);
-
-  const colors = {
-    background: dark ? "#1c1c1e" : "#ffffff",
-    grid: dark ? "rgba(84,84,88,.48)" : "rgba(60,60,67,.12)",
-    baseline: dark ? "rgba(245,245,247,.5)" : "rgba(29,29,31,.35)",
-    selected: dark ? "rgba(174,174,178,.55)" : "rgba(110,110,115,.4)",
-    text: dark ? "#aeaeb2" : "#6e6e73"
-  };
-  const padding = PROGRESS_CHART_PADDING;
-  const plotWidth = width - padding.left - padding.right;
-  const plotHeight = height - padding.top - padding.bottom;
-  const rangeDuration = Math.max(1, endMs - startMs);
-  const xForDate = (date: string): number => {
-    const timestamp = Date.parse(date + "T12:00:00Z");
-    const ratio = Math.min(
-      1,
-      Math.max(0, (timestamp - startMs) / rangeDuration)
-    );
-    return padding.left + plotWidth * ratio;
-  };
-
-  const normalizedValues = series.flatMap((item) => (
-    item.points.map((point) => point.normalizedValue)
-  ));
-  const rawMin = Math.min(100, ...normalizedValues);
-  const rawMax = Math.max(100, ...normalizedValues);
-  const spread = Math.max(4, rawMax - rawMin);
-  const domainPadding = Math.max(1, spread * 0.2);
-  const min = Math.floor((rawMin - domainPadding) * 2) / 2;
-  const max = Math.ceil((rawMax + domainPadding) * 2) / 2;
-  const yForValue = (value: number): number => (
-    padding.top + plotHeight - ((value - min) / (max - min)) * plotHeight
-  );
-
-  context.clearRect(0, 0, width, height);
-  context.font = "10px -apple-system, system-ui, sans-serif";
-  context.fillStyle = colors.text;
-
-  for (let guideIndex = 0; guideIndex <= 4; guideIndex += 1) {
-    const ratio = guideIndex / 4;
-    const x = padding.left + plotWidth * ratio;
-    const y = padding.top + plotHeight * ratio;
-    const value = max - (max - min) * ratio;
-
-    context.strokeStyle = colors.grid;
-    context.lineWidth = 1;
-    context.beginPath();
-    context.moveTo(x, padding.top);
-    context.lineTo(x, padding.top + plotHeight);
-    context.stroke();
-
-    context.beginPath();
-    context.moveTo(padding.left, y);
-    context.lineTo(width - padding.right, y);
-    context.stroke();
-
-    if (Math.abs(value - 100) > 0.45) {
-      const label = value.toFixed(1);
-      context.fillText(
-        label,
-        padding.left - context.measureText(label).width - 6,
-        y + 3
-      );
-    }
-  }
-
-  const baselineY = yForValue(100);
-  context.strokeStyle = colors.baseline;
-  context.lineWidth = 1.5;
-  context.beginPath();
-  context.moveTo(padding.left, baselineY);
-  context.lineTo(width - padding.right, baselineY);
-  context.stroke();
-  context.fillStyle = colors.text;
-  context.font = "600 10px -apple-system, system-ui, sans-serif";
-  context.fillText("100", 5, baselineY + 3);
-
-  const selectedMeasurement = selectedInBodyMeasurement(rangeWindow);
-  if (selectedMeasurement) {
-    const selectedX = xForDate(selectedMeasurement.date);
-    context.strokeStyle = colors.selected;
-    context.lineWidth = 1;
-    context.beginPath();
-    context.moveTo(selectedX, padding.top);
-    context.lineTo(selectedX, padding.top + plotHeight);
-    context.stroke();
-  }
-
-  series.forEach((item) => {
-    context.strokeStyle = item.color;
-    context.lineWidth = 2.5;
-    context.lineJoin = "round";
-    context.lineCap = "round";
-    context.beginPath();
-
-    item.points.forEach((point, index) => {
-      const x = xForDate(point.date);
-      const y = yForValue(point.normalizedValue);
-      if (index === 0) context.moveTo(x, y);
-      else context.lineTo(x, y);
-    });
-    context.stroke();
-
-    item.points.forEach((point) => {
-      const selected = point.date === selectedMeasurement?.date;
-      const x = xForDate(point.date);
-      const y = yForValue(point.normalizedValue);
-      context.fillStyle = selected ? item.color : colors.background;
-      context.strokeStyle = item.color;
-      context.lineWidth = selected ? 2 : 1.5;
-      context.beginPath();
-      context.arc(x, y, selected ? 4.5 : 2.7, 0, Math.PI * 2);
-      context.fill();
-      context.stroke();
-    });
-  });
-
-  context.fillStyle = colors.text;
-  context.font = "11px -apple-system, system-ui, sans-serif";
-  const startLabel = formatChartMonth(startMs);
-  const middleLabel = formatChartMonth(
-    startMs + rangeDuration / 2
-  );
-  const endLabel = formatChartMonth(endMs);
-  context.fillText(startLabel, padding.left, height - 8);
-  context.fillText(
-    middleLabel,
-    width / 2 - context.measureText(middleLabel).width / 2,
-    height - 8
-  );
-  context.fillText(
-    endLabel,
-    width - padding.right - context.measureText(endLabel).width,
-    height - 8
-  );
-}
-
 function showToast(message: string): void {
   state.toast = message;
   const toast = document.querySelector<HTMLInputElement>("#toast");
@@ -2345,9 +2347,6 @@ function escapeHtml(value: unknown): string {
 }
 
 window.addEventListener("online", syncAllSessions);
-window.addEventListener("resize", () => {
-  if (state.activeTab === "progress") drawProgressChart();
-});
 
 loadLocalState();
 await loadBootstrap();

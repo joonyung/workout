@@ -140,11 +140,28 @@ prescribed rest value.
 Use four tabs: Today, History, Progress, and Settings. Respect the iPhone bottom
 safe area. Active state uses Action Blue; inactive state uses secondary text.
 
-### Progress Charts
+### Progress View
 
-Use a white or dark grouped surface, thin neutral grid lines, and a restrained
-multi-series palette. Always provide the current values and labels outside the
-canvas so the chart is not the only source of information.
+The progress view answers three decisions in the order they recur:
+
+1. Training volume: latest 7 days against the weekly average of the previous
+   3 weeks (sessions, working sets, adherence, cardio), plus direct working
+   sets per muscle group drawn against the 8-12 set target band. While today's
+   session is unfinished, the 7-day window ends yesterday.
+2. Per-exercise progression: one row per exercise id, grouped by the session
+   it was last trained in. Show the latest working sets in the machine's own
+   unit (lb stays lb), the previous session for comparison, a status chip
+   (증량, 반복 증가, 유지, 반복 감소, 정체, 감량, 기준선) with a glyph so status
+   never depends on color, and a 6-week estimated 1RM sparkline compared in kg.
+3. Body composition: small multiples in real units (kg, %), never an index
+   that mixes units. Each metric has a minimum y-span near measurement noise
+   so small fluctuations read as flat, labelled scale endpoints, the change
+   since the previous and first measurement in range, and a same-direction run
+   only when 3 or more measurements agree. Multi-month gaps are dashed.
+
+Charts are inline SVG plus HTML dots using the color tokens, so they follow
+light and dark mode without redraws. Values and labels always appear as text
+outside the chart.
 
 ## Responsive Behavior
 
